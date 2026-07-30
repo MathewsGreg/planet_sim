@@ -20,26 +20,13 @@ from scipy.special import sph_harm_y
 from grid import Grid
 
 
-def random_elevation(
-    grid: Grid,
-    seed: int,
-    l_max: int = 10,
-    spectral_slope: float = 1.8,
-) -> np.ndarray:
-    """
-    Real-valued elevation field on grid cell centers, built from random
-    spherical harmonic coefficients with amplitude falling off as 1/l^slope.
-    Returned field has zero mean and unit standard deviation (unitless;
-    terrain.classify() below turns it into physical-ish elevation).
-    """
-    rng = np.random.default_rng(seed)
-
-    # colatitude theta in [0, pi], longitude phi in [0, 2pi) for sph_harm_y
+def _harmonic_sum(grid: Grid, rng: np.random.Generator, l_min: int, l_max: int, spectral_slope: float) -> np.ndarray:
+    """Random real spherical-harmonic sum over degrees [l_min, l_max], amplitude ~1/l^slope."""
     theta = np.radians(90.0 - grid.lat)
     phi = np.radians(grid.lon % 360.0)
 
     field = np.zeros(grid.n_cells, dtype=np.float64)
-    for l in range(1, l_max + 1):
+    for l in range(l_min, l_max + 1):
         sigma = 1.0 / (l ** spectral_slope)
         # m = 0 term is already real
         c0 = rng.normal(0.0, sigma)
@@ -50,6 +37,42 @@ def random_elevation(
         for m in range(1, l + 1):
             c = rng.normal(0.0, sigma) + 1j * rng.normal(0.0, sigma)
             field += 2.0 * np.real(c * sph_harm_y(l, m, theta, phi))
+    return field
+
+
+def random_elevation(
+    grid: Grid,
+    seed: int,
+    l_max: int = 10,
+    spectral_slope: float = 1.8,
+    ridge_l_max: int = 15,
+    ridge_weight: float = 0.8,
+) -> np.ndarray:
+    """
+    Real-valued elevation field on grid cell centers.
+
+    Base layer: random low-degree (1..l_max) spherical harmonics, amplitude
+    falling off as 1/l^slope -- "red" spectrum, gives smooth continent-scale
+    blobs (this alone has no linear mountain *ranges*, just rounded highlands,
+    since low-degree spherical harmonics are inherently round basis functions).
+
+    Ridge layer: a second, higher-degree (l_max+1..ridge_l_max) harmonic sum,
+    put through a ridge transform (1 - |field|, squared) -- the standard
+    "ridged noise" trick from procedural terrain generation. Zero-crossings
+    of a smooth random field become sharp creases instead of round bumps,
+    which is what actually gives wind something coastal/linear to be forced
+    up and over, instead of just "high ground somewhere inland."
+
+    Returned field has zero mean and unit standard deviation.
+    """
+    rng = np.random.default_rng(seed)
+    field = _harmonic_sum(grid, rng, 1, l_max, spectral_slope)
+
+    if ridge_l_max > l_max and ridge_weight > 0:
+        ridge_raw = _harmonic_sum(grid, rng, l_max + 1, ridge_l_max, spectral_slope=1.0)
+        ridge_raw /= ridge_raw.std()
+        ridge = np.clip(1.0 - np.abs(ridge_raw), 0.0, None) ** 2
+        field = field + ridge_weight * field.std() * ridge
 
     field -= field.mean()
     field /= field.std()
@@ -79,10 +102,23 @@ def classify(
     elevation: np.ndarray,
     land_fraction: float = 0.30,
     seed: int = 0,
+    precip: np.ndarray | None = None,
+    desert_fraction: float = 0.4,
 ) -> Terrain:
     """
     Turn a raw elevation field into land/ocean + biome, targeting a given
     area-weighted land fraction (Earth is ~0.29-0.30).
+
+    Ice/tundra still come from latitude + elevation (a temperature proxy --
+    there's no simulated temperature field yet). But if `precip` (mm/day,
+    from atmosphere.py's moisture tracer) is supplied, it replaces the old
+    fixed-latitude-band desert/forest split: desert is now wherever the
+    simulation actually produced low rainfall -- which can be a subtropical
+    dry belt, or a rain shadow at any latitude -- rather than a prescribed
+    12-35 degree band. `desert_fraction` sets how much of the non-ice,
+    non-tundra land counts as desert, via a percentile of the actual
+    precipitation distribution (self-calibrating, since the moisture model's
+    absolute mm/day units aren't independently validated against anything).
     """
     # Area-weighted percentile: pick the elevation threshold such that the
     # cells above it cover `land_fraction` of total sphere area.
@@ -109,9 +145,16 @@ def classify(
     snow_line = 2.2 * np.cos(np.radians(np.clip(abs_lat, 0, 90))) ** 1.3
 
     ice = is_land & ((abs_lat > 66.5) | (land_elev_above_sea > snow_line))
-    desert = is_land & ~ice & (abs_lat < 35.0) & (abs_lat >= 12.0)
     tundra = is_land & ~ice & (abs_lat > 55.0)
-    forest = is_land & ~ice & ~desert & ~tundra  # equatorial belt + temperate belt
+    temperate = is_land & ~ice & ~tundra
+
+    if precip is not None:
+        temperate_precip = precip[temperate]
+        thresh = np.percentile(temperate_precip, desert_fraction * 100) if temperate_precip.size else 0.0
+        desert = temperate & (precip <= thresh)
+    else:
+        desert = temperate & (abs_lat < 35.0) & (abs_lat >= 12.0)
+    forest = temperate & ~desert
 
     biome[ice] = 5
     biome[desert] = 2

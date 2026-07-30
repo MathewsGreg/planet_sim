@@ -17,8 +17,8 @@ Div below are built as exact discrete adjoints (see the identity in the
 stable by construction, the same reason real ocean/atmosphere models never
 collocate velocity and pressure/height.
 
-    d(u_n)/dt = -g * d(h)/dn - f * u_tangential + diffusion - u_n/tau_fric
-    dh/dt + div(h * u) = -(h - h_eq(lat, t)) / tau_rad
+    d(u_n)/dt = -g * d(h + b)/dn - f * u_tangential + diffusion - u_n/tau_fric(land)
+    dh/dt + div(h * u) = -(h - h_eq(lat, t, land)) / tau_rad(land)
 
 Coriolis needs the *tangential* velocity at each edge, which isn't a
 prognostic variable here. We reconstruct a full 2D velocity vector at each
@@ -28,6 +28,17 @@ approximation (real TRiSK uses an exact, mimetic tangential-reconstruction
 operator with provable energy/enstrophy properties) -- but it only feeds
 Coriolis, which was never the source of the instability above, so a smooth
 least-squares reconstruction is a reasonable "TRiSK-lite" compromise.
+
+Optional Terrain coupling (see ShallowWaterAtmosphere.__init__): land
+elevation enters the momentum equation as static bottom topography `b` --
+the pressure-gradient term uses grad(h+b) instead of grad(h), so a static
+"free-surface height" gradient permanently pushes flow around/over
+mountains, the standard shallow-water-with-topography formulation. Land
+cells also get shorter friction and radiative-relaxation timescales than
+ocean cells, standing in for land's much lower heat capacity and higher
+surface roughness -- continents both deflect the flow mechanically and
+heat/cool faster than the ocean next to them, which is what actually
+generates weather rather than just perturbing it.
 """
 from __future__ import annotations
 
@@ -51,8 +62,38 @@ class AtmosParams:
                                  # gravity-wave speed sqrt(g*h0) stays low enough
                                  # for a tractable CFL time step at this resolution
     delta_h_eq: float = 400.0   # equator-to-pole equilibrium thickness contrast (m)
-    tau_rad: float = 8 * 86400.0    # radiative relaxation timescale (s)
-    tau_fric: float = 12 * 86400.0  # linear drag timescale (s)
+    tau_rad: float = 8 * 86400.0    # radiative relaxation timescale over ocean (s)
+    tau_fric: float = 12 * 86400.0  # linear drag timescale over ocean (s)
+    tau_rad_land: float = 2.5 * 86400.0   # land has much lower heat capacity than
+                                            # ocean -- it tracks its (more extreme,
+                                            # see land_amplify) equilibrium far faster
+    tau_fric_land: float = 3 * 86400.0     # land is rougher (terrain, vegetation) --
+                                            # more surface drag than open ocean
+    land_amplify: float = 1.6   # land's h_eq deviates from h0 this much more than
+                                 # ocean's at the same latitude/season -- continental
+                                 # climates swing hotter/colder than maritime ones
+    topo_scale: float = 700.0   # m of bottom topography per unit of terrain's
+                                 # (unitless, ~N(0,1)) elevation field above sea level
+
+    # -- moisture: a passive tracer (doesn't feed back into h/u dynamics) --
+    q_sat: float = 40.0             # mm precipitable water, ocean evaporation ceiling
+    q_crit_frac: float = 0.5        # convective rain triggers above q_crit_frac*q_sat
+    tau_evap: float = 4 * 86400.0   # ocean evaporation relaxation timescale (s)
+    tau_precip: float = 1.5 * 86400.0  # convective rain-out timescale (s)
+    oro_coeff: float = 3.0e-3       # orographic rain coefficient, 1/m (upslope-wind-
+                                     # driven rain-out rate = oro_coeff * ascent(m/s) * q)
+    kappa_q: float = 5.0e4          # moisture diffusion coeff, m^2/s (same role as kappa_h)
+    conv_sensitivity: float = 2.5e7  # mm*s -- shifts the convective threshold down where
+                                      # wind converges (rising motion, real rain-belt cause)
+                                      # and up where it diverges (subsidence, real desert-
+                                      # belt cause, e.g. the subtropical highs behind Earth's
+                                      # deserts) -- reuses the existing divergence operator
+    tau_div_avg: float = 15 * 86400.0  # smoothing timescale for the divergence field used
+                                        # by precipitation(): instantaneous div(u) is noise-
+                                        # dominated at the grid scale (checked empirically --
+                                        # its point-to-point std exceeded the coherent
+                                        # latitude-band signal), so a running time-average is
+                                        # what actually drives the desert-belt modulation
     nu: float = 5.0e4           # velocity diffusion coeff, m^2/s (eddy-diffusivity scale)
     kappa_h: float = 5.0e4      # thickness diffusion coeff, m^2/s -- central-difference
                                  # flux averaging (h_edge = avg(h_left,h_right)) is blind to
@@ -203,14 +244,61 @@ class CGridGeometry:
 class AtmosState:
     h: np.ndarray   # (n_cells,) m
     u: np.ndarray   # (n_edges,) m/s, edge-normal component
+    q: np.ndarray   # (n_cells,) mm precipitable water (passive moisture tracer)
 
 
 class ShallowWaterAtmosphere:
-    def __init__(self, grid: Grid, params: AtmosParams | None = None):
+    def __init__(self, grid: Grid, params: AtmosParams | None = None, terrain=None):
         self.grid = grid
         self.p = params or AtmosParams()
         self.geo = CGridGeometry(grid, self.p.radius)
         self.t = 0.0
+        self.terrain = terrain
+
+        p = self.p
+        if terrain is not None:
+            self.is_land = terrain.is_land
+            self.topo_b = np.where(
+                terrain.is_land,
+                np.clip(terrain.elevation - terrain.sea_level, 0.0, None) * p.topo_scale,
+                0.0,
+            )
+        else:
+            self.is_land = np.zeros(grid.n_cells, dtype=bool)
+            self.topo_b = np.zeros(grid.n_cells)
+
+        if terrain is not None:
+            # smooth away single-cell slope spikes: an unresolved, near-vertical
+            # ridge crest one triangle wide produces a huge local grad(b), which
+            # blows the orographic rain term way past anything physical (checked:
+            # unsmoothed, mean precip hit 150+ mm/day at a handful of cells).
+            # Real terrain-following models smooth orography for the same reason.
+            for _ in range(3):
+                neighbor_mean = self.topo_b[grid.neighbors].mean(axis=1)
+                self.topo_b = 0.5 * self.topo_b + 0.5 * neighbor_mean
+
+        # blend ocean/land rates by averaging RATES (not timescales) so a
+        # coast edge (one land cell, one ocean cell) gets a sensible middle
+        # value rather than something skewed by which timescale is larger
+        land_l = self.is_land[self.geo.cell_left].astype(float)
+        land_r = self.is_land[self.geo.cell_right].astype(float)
+        fric_rate_ocean, fric_rate_land = 1.0 / p.tau_fric, 1.0 / p.tau_fric_land
+        self.fric_rate_edge = 0.5 * (
+            (land_l * fric_rate_land + (1 - land_l) * fric_rate_ocean)
+            + (land_r * fric_rate_land + (1 - land_r) * fric_rate_ocean)
+        )
+        rad_rate_ocean, rad_rate_land = 1.0 / p.tau_rad, 1.0 / p.tau_rad_land
+        self.rad_rate_cell = np.where(self.is_land, rad_rate_land, rad_rate_ocean)
+
+        # static terrain slope at cell centers, for the orographic rain term:
+        # reuse reconstruct_cell_vector -- it's a generic "edge-normal-component
+        # field -> cell-centered vector" operator, so feeding it grad(b)'s
+        # edge-normal component (instead of a velocity) reconstructs grad(b)
+        # itself as a proper vector.
+        grad_b_edge = self.geo.gradient_normal(self.topo_b)
+        self.grad_b_cell = self.geo.reconstruct_cell_vector(grad_b_edge)
+
+        self.div_avg = np.zeros(grid.n_cells)  # running time-mean of div(u), see precipitation()
 
     def initial_state(self, perturb: float = 0.0, seed: int = 0) -> AtmosState:
         h = np.full(self.grid.n_cells, self.p.h0)
@@ -218,16 +306,37 @@ class ShallowWaterAtmosphere:
             rng = np.random.default_rng(seed)
             h = h + perturb * rng.standard_normal(self.grid.n_cells)
         u = np.zeros(self.geo.edges.n_edges)
-        return AtmosState(h=h, u=u)
+        q = np.zeros(self.grid.n_cells)  # start bone dry, let evaporation fill it in
+        return AtmosState(h=h, u=u, q=q)
+
+    def precipitation(self, s: AtmosState, u_cell: np.ndarray) -> np.ndarray:
+        """Rain-out rate (mm/s): general convective (moisture above a threshold
+        that convergence lowers and divergence raises -- real deserts are mostly
+        subtropical subsidence zones, not just "far from mountains") plus
+        orographic (forced ascent up a slope wrings out moisture directly,
+        independent of the convective threshold -- this is what produces a
+        windward-wet/leeward-dry rain shadow next to mountains)."""
+        p = self.p
+        # div_avg (updated in step(), not the instantaneous divergence): see
+        # tau_div_avg docstring above -- <0 converging/rising, >0 diverging/sinking
+        q_crit = p.q_crit_frac * p.q_sat + p.conv_sensitivity * self.div_avg
+        convective = np.clip(s.q - q_crit, 0.0, None) / p.tau_precip
+        ascent = np.einsum("ij,ij->i", u_cell, self.grad_b_cell)  # m/s "upslope wind"
+        orographic = p.oro_coeff * np.clip(ascent, 0.0, None) * s.q
+        return convective + orographic
 
     def h_equilibrium(self, t: float) -> np.ndarray:
-        """Latitude+season dependent equilibrium thickness -- the insolation proxy."""
+        """Latitude+season dependent equilibrium thickness -- the insolation proxy.
+        Land cells get an amplified deviation from h0 (land_amplify > 1): lower
+        heat capacity means continental interiors run hotter in summer, colder
+        in winter than the ocean at the same latitude."""
         lat = np.radians(self.grid.lat)
         year = 365.25 * 86400.0
         decl = self.p.obliquity * np.sin(2 * np.pi * t / year)
         coszen = np.clip(np.sin(lat) * np.sin(decl) + np.cos(lat) * np.cos(decl), 0.0, None)
         insolation_norm = coszen - coszen.mean()
-        return self.p.h0 + self.p.delta_h_eq * insolation_norm / max(insolation_norm.max(), 1e-9)
+        amplify = np.where(self.is_land, self.p.land_amplify, 1.0)
+        return self.p.h0 + self.p.delta_h_eq * amplify * insolation_norm / max(insolation_norm.max(), 1e-9)
 
     def cfl_dt(self, safety: float = 0.4) -> float:
         dx = np.sqrt(self.geo.cell_area.mean())
@@ -240,17 +349,27 @@ class ShallowWaterAtmosphere:
         h_eq = self.h_equilibrium(t)
         h_edge = 0.5 * (s.h[geo.cell_left] + s.h[geo.cell_right])
         flux = h_edge * s.u
-        dhdt = -geo.divergence(flux) - (s.h - h_eq) / p.tau_rad + p.kappa_h * geo.cell_laplacian(s.h)
+        dhdt = (
+            -geo.divergence(flux)
+            - (s.h - h_eq) * self.rad_rate_cell
+            + p.kappa_h * geo.cell_laplacian(s.h)
+        )
 
-        grad_h = geo.gradient_normal(s.h)
+        grad_eta = geo.gradient_normal(s.h + self.topo_b)  # free-surface = fluid + bottom
         u_tan = geo.tangential_at_edges(s.u)
         coriolis = geo.f_edge * u_tan
 
         diffusion = p.nu * geo.edge_laplacian(s.u)
 
-        dudt = -p.g * grad_h - coriolis + diffusion - s.u / p.tau_fric
+        dudt = -p.g * grad_eta - coriolis + diffusion - self.fric_rate_edge * s.u
 
-        return AtmosState(h=dhdt, u=dudt)
+        u_cell = geo.reconstruct_cell_vector(s.u)
+        q_edge = 0.5 * (s.q[geo.cell_left] + s.q[geo.cell_right])
+        evap = np.where(self.is_land, 0.0, np.clip(p.q_sat - s.q, 0.0, None) / p.tau_evap)
+        precip = self.precipitation(s, u_cell)
+        dqdt = -geo.divergence(q_edge * s.u) + evap - precip + p.kappa_q * geo.cell_laplacian(s.q)
+
+        return AtmosState(h=dhdt, u=dudt, q=dqdt)
 
     def step(self, s: AtmosState, dt: float) -> AtmosState:
         """
@@ -265,7 +384,7 @@ class ShallowWaterAtmosphere:
         """
 
         def add(a: AtmosState, b: AtmosState, scale: float) -> AtmosState:
-            return AtmosState(h=a.h + scale * b.h, u=a.u + scale * b.u)
+            return AtmosState(h=a.h + scale * b.h, u=a.u + scale * b.u, q=a.q + scale * b.q)
 
         k1 = self.tendency(s, self.t)
         k2 = self.tendency(add(s, k1, 0.5 * dt), self.t + 0.5 * dt)
@@ -274,8 +393,18 @@ class ShallowWaterAtmosphere:
 
         h_new = s.h + (dt / 6.0) * (k1.h + 2 * k2.h + 2 * k3.h + k4.h)
         u_new = s.u + (dt / 6.0) * (k1.u + 2 * k2.u + 2 * k3.u + k4.u)
+        q_new = np.clip(s.q + (dt / 6.0) * (k1.q + 2 * k2.q + 2 * k3.q + k4.q), 0.0, None)
         self.t += dt
-        return AtmosState(h=h_new, u=u_new)
+
+        # exponential running mean of divergence, for precipitation()'s
+        # desert-belt modulation (a simple low-pass filter, not part of the
+        # RK4-integrated dynamics -- it's a smoothing diagnostic, not a
+        # conserved physical quantity)
+        div_now = self.geo.divergence(u_new)
+        relax = min(1.0, dt / self.p.tau_div_avg)
+        self.div_avg += relax * (div_now - self.div_avg)
+
+        return AtmosState(h=h_new, u=u_new, q=q_new)
 
     def energy(self, s: AtmosState) -> float:
         """Diagnostic total energy (KE + available potential energy), for stability checks."""

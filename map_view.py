@@ -91,6 +91,15 @@ def quiver_wind(grid: Grid, u_east: np.ndarray, v_north: np.ndarray, ax, stride:
     )
 
 
+def plot_coastline(grid: Grid, is_land: np.ndarray, ax, color: str = "black", size: float = 6.0):
+    """Scatter-outline the land/ocean boundary: land cells with >=1 ocean neighbor."""
+    neighbor_is_ocean = ~is_land[grid.neighbors]  # (F,3)
+    has_ocean_neighbor = neighbor_is_ocean.any(axis=1)
+    coastal = is_land & has_ocean_neighbor
+    ax.scatter(grid.lon[coastal], grid.lat[coastal], s=size, c=color, marker=".",
+               linewidths=0.5, edgecolors="white", zorder=5)
+
+
 def geographic_components(grid: Grid, vec3: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Project cell-centered 3D tangent vectors onto local (east, north) unit vectors."""
     lon = np.radians(grid.lon)
