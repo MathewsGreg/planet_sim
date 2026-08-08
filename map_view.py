@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.collections import PolyCollection
+from scipy.interpolate import griddata
 
 from grid import Grid
 
@@ -88,6 +89,57 @@ def quiver_wind(grid: Grid, u_east: np.ndarray, v_north: np.ndarray, ax, stride:
         lon[idx], lat[idx], u_east[idx], v_north[idx],
         color="white", scale_units="inches", scale=kwargs.pop("scale", 120),
         width=0.0018, alpha=0.85, **kwargs,
+    )
+
+
+def streamlines(
+    grid: Grid,
+    u_east: np.ndarray,
+    v_north: np.ndarray,
+    ax,
+    mask: np.ndarray | None = None,
+    grid_res: int = 220,
+    density: float = 2.2,
+    color=None,
+    cmap: str = "cool",
+    linewidth_scale: float = 2.5,
+    **kwargs,
+):
+    """
+    Streamline plot of a vector field defined on the unstructured triangle
+    grid. matplotlib's streamplot needs a *regular* lon/lat grid, so this
+    interpolates u_east/v_north (linear barycentric via griddata) from
+    cell centers onto a regular mesh first -- fine for currents, which are
+    smooth at basin scale, the thing streamlines are meant to show off.
+
+    `mask` (e.g. is_land) is interpolated the same way and used to blank
+    out land so streamlines don't run across continents.
+
+    `color=None` colors streamlines by local speed (cmap); pass a fixed
+    color string to override.
+    """
+    lon_lin = np.linspace(-180, 180, grid_res)
+    lat_lin = np.linspace(-90, 90, grid_res // 2)
+    lon_grid, lat_grid = np.meshgrid(lon_lin, lat_lin)
+
+    points = np.column_stack([grid.lon, grid.lat])
+    u_grid = griddata(points, u_east, (lon_grid, lat_grid), method="linear")
+    v_grid = griddata(points, v_north, (lon_grid, lat_grid), method="linear")
+
+    if mask is not None:
+        land_grid = griddata(points, mask.astype(float), (lon_grid, lat_grid), method="linear")
+        blank = land_grid > 0.5
+        u_grid = np.where(blank, np.nan, u_grid)
+        v_grid = np.where(blank, np.nan, v_grid)
+
+    speed = np.sqrt(u_grid ** 2 + v_grid ** 2)
+    color_arg = speed if color is None else color
+    lw = linewidth_scale * speed / np.nanmax(speed) if color is None else 1.2
+
+    return ax.streamplot(
+        lon_grid, lat_grid, u_grid, v_grid,
+        density=density, color=color_arg, cmap=cmap if color is None else None,
+        linewidth=lw, arrowsize=0.9, **kwargs,
     )
 
 

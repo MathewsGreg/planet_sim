@@ -19,8 +19,9 @@ ensembles are in place.
 - [x] Procedural continents + latitude/elevation-driven biomes
 - [x] Single-layer rotating shallow-water atmosphere (C-grid, energy-conserving)
 - [ ] Multi-layer atmosphere (Hadley/Ferrel/polar cell structure)
-- [ ] Ocean layer (wind-driven surface + buoyancy-driven deep/thermohaline)
-- [ ] Atmosphere-ocean coupling, seasonal cycle, ice-albedo feedback
+- [x] Wind-driven ocean surface layer (reduced-gravity, one-way wind forcing) -- stable and checkpointable, but gyre structure is still rough; see below
+- [ ] Buoyancy-driven deep/thermohaline ocean layer (temperature + salinity, sea-ice/brine rejection)
+- [ ] Atmosphere-ocean coupling (currently one-way, atmosphere -> ocean only), seasonal cycle, ice-albedo feedback
 - [ ] Web visualization (interactive globe, controls, analytics)
 - [ ] Randomized-continent ensemble runs
 
@@ -31,7 +32,12 @@ ensembles are in place.
 | `grid.py` | Geodesic sphere: icosahedron subdivision, per-cell area/lat-lon, cell-neighbor and global edge topology |
 | `terrain.py` | Procedural elevation (random low-degree spherical harmonics → continent-scale blobs, not noise), land/ocean split, latitude+elevation biome classification |
 | `atmosphere.py` | Rotating shallow-water solver on the grid — the physics core |
+| `ocean.py` | Wind-driven reduced-gravity ocean surface layer — reuses `atmosphere.py`'s C-grid geometry/operators directly, one-way forced by the atmosphere's time-mean wind |
+| `checkpoint.py` | Save/load a full terrain + atmosphere + ocean snapshot to one .npz, so a multi-minute-to-half-hour spin-up doesn't have to be re-run from scratch every time |
 | `visualize.py` | Renders grid + terrain as a 3D globe (pyvista) |
+| `map_view.py` | 2D equirectangular map rendering — flat/colormapped fills, wind quivers, current streamlines, coastline overlay |
+| `run_ocean_currents.py` | Spins up the atmosphere, time-averages its wind over a full year, spins up the ocean under it, plots current speed + streamlines, saves a checkpoint |
+| `continue_ocean_spinup.py` | Resumes an ocean checkpoint with changed params (e.g. viscosity) and/or more simulated time, without re-running the atmosphere |
 
 Each module's `__main__` block runs a self-contained sanity check
 (`python grid.py`, `python terrain.py`, `python atmosphere.py`, ...).
@@ -101,13 +107,83 @@ With all three fixed, a 150-day run with full insolation forcing stays
 bounded, with wind speeds settling into a physically plausible ~24-25 m/s
 range (jet-stream scale) rather than diverging.
 
+## The ocean solver, and what's still rough
+
+`ocean.py` is a wind-driven, reduced-gravity single-layer shallow-water
+model — a stand-in for the wind-mixed surface ocean sitting over a deep,
+quiescent abyss — reusing `atmosphere.py`'s C-grid geometry and operators
+unmodified. It's one-way forced: `run_ocean_currents.py` spins the
+atmosphere up, time-averages its wind over a full year, and feeds that in
+as a fixed body force; the ocean doesn't push back on the atmosphere yet.
+
+Getting a stable run took three more of the same kind of lesson as the
+atmosphere:
+
+1. **Inertial-period CFL violation.** Reduced gravity makes ocean gravity
+   waves ~22x slower than the atmosphere's, so the gravity-wave CFL alone
+   allowed a 14-hour timestep — far too coarse to resolve Coriolis inertial
+   oscillations, which need `f·dt` well inside RK4's stability region.
+   Slow blowup to NaN by ~day 110. Fix: `cfl_dt()` also bounds `dt` by the
+   inertial period, which ends up the binding constraint here (the
+   atmosphere never needed this bound explicitly, since its gravity-wave
+   CFL was already far smaller by comparison).
+2. **Non-conservative coastal handling.** The first version hard-reset
+   land cells to `h0` and coastal edges to zero *after* each RK4 step —
+   invisible to the integrator, and on real jagged coastlines it silently
+   deleted/injected mass at every land cell, every step (the no-land
+   self-test never caught it, since that code path never ran there). Fix:
+   replaced with smooth relaxation terms inside `tendency()`, the same way
+   `atmosphere.py` already treats land.
+3. **Wind-forcing grid noise.** Even after fixing #2, a real atmosphere-
+   derived wind field still blew the ocean up by ~day 180. Time-averaging
+   removes transient (day-to-day) noise but not spatially-persistent
+   grid-scale structure in the wind field. Fix: `smooth_edge_field()`
+   smooths the forcing the same way `atmosphere.py` already smooths spiky
+   single-cell terrain slopes.
+
+With all three fixed, a full checkpointed run (atmosphere spin-up + a
+full year of wind-averaging + a multi-year ocean spin-up) is stable, but
+the resulting current field is a rough first pass, not a clean one:
+
+- **Hemisphere asymmetry turned out to be real, not a bug.** This world's
+  random continents (seed=1) put only ~6% land in the southern high
+  latitudes vs. ~35% in the north — an unobstructed band supports a
+  strong, continuous zonal jet the way Earth's real Antarctic
+  Circumpolar Current does; the land-cluttered north can't build the same
+  speed. Checked directly via land fraction by latitude band, not assumed.
+- **The western boundary layer is structurally under-resolved.** Munk
+  (1950) theory puts the boundary-layer width at `(nu/beta)^(1/3)` —
+  ~100km at this grid's original `nu`, against ~316km cells. That's why
+  currents came out turbulent and gyre-less rather than organized into a
+  loop: the boundary current has nowhere to exist at that resolution.
+  Raising `nu` to match the grid (`munk_matched_nu()`) fixed the
+  *structure* — streamlines went from noisy scribble to smooth, coherent
+  flow, with recirculation loops appearing for the first time — but at a
+  real cost: peak current speed collapsed ~30x (0.13-0.17 m/s → ~0.004
+  m/s). Harmonic (∇²) viscosity isn't scale-selective — its damping rate
+  scales with wavenumber², so a coefficient large enough to fix a ~100km
+  problem also heavily damps the ~5,000km gyre-scale flow, not just the
+  coast.
+
+**Next up: biharmonic (∇⁴) diffusion.** Real ocean models (MOM, POP,
+MITgcm) use biharmonic rather than harmonic viscosity for exactly this
+job — its damping rate scales with wavenumber⁴, concentrating it much
+more tightly at the grid scale and leaving basin-scale flow largely
+alone. The plan is to apply the existing Laplacian operator twice as the
+boundary-layer/noise control, dial the harmonic `nu` back down near its
+original value, and see whether that gets both the clean structure and
+realistic current speeds at once.
+
 ## Roadmap
 
-Next: bring the ocean layer online (2-layer wind + buoyancy-driven, same
-grid/edge machinery), couple it to the atmosphere, add seasons and
-ice-albedo feedback, then run randomized-continent ensembles to see whether
-Earth-like patterns (western boundary intensification, subtropical gyres,
-the thermohaline overturning loop) re-emerge independent of geography.
+Immediate next step: biharmonic diffusion for the ocean layer (above).
+After that: a buoyancy-driven deep/thermohaline layer (temperature +
+salinity, sea-ice formation with brine rejection at the poles) under the
+wind-driven surface layer, two-way atmosphere-ocean coupling, a seasonal
+cycle, ice-albedo feedback, then randomized-continent ensembles to see
+whether Earth-like patterns (western boundary intensification, subtropical
+gyres, the thermohaline overturning loop) re-emerge independent of
+geography.
 
 Once there's something worth watching move, this is meant to live on a web
 page — an interactive globe with time controls and analytics (energy
