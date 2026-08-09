@@ -19,7 +19,7 @@ ensembles are in place.
 - [x] Procedural continents + latitude/elevation-driven biomes
 - [x] Single-layer rotating shallow-water atmosphere (C-grid, energy-conserving)
 - [ ] Multi-layer atmosphere (Hadley/Ferrel/polar cell structure)
-- [x] Wind-driven ocean surface layer (reduced-gravity, one-way wind forcing) -- stable and checkpointable, but gyre structure is still rough; see below
+- [x] Wind-driven ocean surface layer (reduced-gravity, one-way wind forcing) -- stable and checkpointable; biharmonic diffusion now in production data, gyre structure much improved; see below
 - [ ] Buoyancy-driven deep/thermohaline ocean layer (temperature + salinity, sea-ice/brine rejection)
 - [ ] Atmosphere-ocean coupling (currently one-way, atmosphere -> ocean only), seasonal cycle, ice-albedo feedback
 - [x] Web visualization — interactive globe (terrain/wind/currents layers, wind animation with time scrubber); analytics still minimal
@@ -189,15 +189,13 @@ stability:
   near a landmass for the first time. Cost: dt drops ~5.5x (2745s ->
   500s), so a full ocean spin-up is meaningfully more expensive now.
 
-`target_cells=2.0` is wired into `export_web_data.py`, but the fresh
+`target_cells=2.0` is wired into `export_web_data.py`, and the fresh
 production data (real terrain + full atmosphere coupling, not the cached
-test forcing) hasn't finished generating -- a run was killed partway
-through the ocean phase when the machine was needed for something else
-(heavy unrelated CPU contention had already dragged it well past the
-original estimate anyway). **Next session: re-run `export_web_data.py`
-end to end**, rebuild the globe, republish. Everything needed to do that
-is committed; only the multi-checkpoint ocean.npz outputs and the final
-web_data.json/globe.html are not (regenerable, gitignored per usual).
+test forcing) has now been generated end to end: a full 4-year ocean
+spin-up, stable throughout, with `nu4=1.98e18`. The qualitative payoff
+carried through to the real run, not just the cached-forcing sweep --
+traced current streamlines dropped from ~28k short, noisy segments to
+7,450 coherent ones. Globe rebuilt and republished from this data.
 
 ## The web globe
 
@@ -223,16 +221,13 @@ traced streamlines instead: `export_web_data.py` reuses `map_view.py`'s
 existing matplotlib-streamplot tracer once (currents are a static layer;
 no need to re-integrate every frame), converts the resulting lon/lat path
 segments to xyz, and the page just rotates + redraws those precomputed
-segments each frame. Worth knowing: the streamlines faithfully show what's
-actually in the data right now, which is still the pre-biharmonic, noisy
-current field (~28k short segments, not clean loops) -- expect this layer
-to visibly clean up once the biharmonic diffusion work above lands.
+segments each frame. The streamlines now reflect the post-biharmonic
+current field (7,450 segments, smooth coherent loops rather than the
+earlier ~28k-segment noisy scribble).
 
 ## Roadmap
 
-Immediate next step: re-run `export_web_data.py` to completion with the
-now-implemented, empirically-tuned biharmonic diffusion (above) and
-publish the refreshed globe. After that: a buoyancy-driven deep/thermohaline layer (temperature + salinity,
+Immediate next step: a buoyancy-driven deep/thermohaline layer (temperature + salinity,
 sea-ice formation with brine rejection at the poles) under the wind-driven
 surface layer, two-way atmosphere-ocean coupling, a seasonal cycle,
 ice-albedo feedback, then randomized-continent ensembles to see whether

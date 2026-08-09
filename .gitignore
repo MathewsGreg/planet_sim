@@ -7,3 +7,5 @@ __pycache__/
 *.npz
 web_data.json
 globe.html
+
+*.log
