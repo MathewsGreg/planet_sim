@@ -38,11 +38,13 @@ def lonlat_to_xyz(lon, lat):
 if __name__ == "__main__":
     g = build_grid(4)
     elev = random_elevation(g, seed=1)  # new l_min=2 default -> a couple of continents
+    # Elevation-only pass first: is_land/sea_level only depend on elevation,
+    # and the atmosphere needs a terrain (land contrast) to run at all --
+    # biome labels get replaced below once real precipitation exists, but
+    # is_land itself never changes, so the ocean/current code downstream
+    # that depends on it is unaffected by the later reclassification.
     terrain = classify(g, elev)
     print(f"land fraction: {g.area[terrain.is_land].sum() / g.area.sum():.3f}")
-
-    terrain_rgb = biome_colors(terrain, elevation_shading=True)
-    terrain_hex = ["#%02x%02x%02x" % tuple(c) for c in terrain_rgb]
 
     # --- Atmosphere: animate the first 90 days, then 30 more (uncaptured)
     #     days of wind-averaging to force the ocean ---
@@ -59,12 +61,20 @@ if __name__ == "__main__":
     arrow_stride = 8
     arrow_cells = np.arange(g.n_cells)[::arrow_stride]
 
+    # Accumulated alongside the wind animation below (same run, no extra
+    # atmosphere spin-up needed) -- same per-step mm/s * dt accumulation
+    # run_weather_biomes.py validated, just spread over the animated window
+    # instead of a separate dedicated spin-up+accumulate pair.
+    accum_precip = np.zeros(g.n_cells)
+
     wind_frames_speed = []
     wind_arrow_dir = []  # (n_frames, n_arrows, 3) unit tangent vectors, quantized
     wind_days = []
     for f in range(n_frames):
         for _ in range(steps_per_frame):
             s_a = atmos.step(s_a, dt_a)
+            u_step = atmos.geo.reconstruct_cell_vector(s_a.u)
+            accum_precip += atmos.precipitation(s_a, u_step) * dt_a
         vec = atmos.geo.reconstruct_cell_vector(s_a.u)
         speed = np.linalg.norm(vec, axis=1)
         wind_frames_speed.append(speed)
@@ -75,6 +85,23 @@ if __name__ == "__main__":
         wind_days.append(atmos.t / 86400.0)
         print(f"  wind frame {f + 1}/{n_frames}  t={atmos.t / 86400:.1f}d", end="\r", flush=True)
     print()
+
+    # --- Reclassify biomes from real simulated precipitation (mm/day,
+    # averaged over the animated window above) instead of the fixed
+    # 12-35 degree latitude band. Ice/tundra stay latitude+elevation-driven
+    # -- there's no simulated temperature field yet, see terrain.classify --
+    # only the desert/forest split changes. is_land/sea_level are unchanged
+    # (classify() recomputes them identically from the same elevation), so
+    # nothing downstream (atmos, ocean) needs to be rebuilt.
+    mean_precip = accum_precip / animate_days  # mm/day
+    print(f"mean precip range=[{mean_precip.min():.2f}, {mean_precip.max():.2f}] mm/day")
+    old_desert_frac = g.area[terrain.biome == 2].sum() / g.area.sum()
+    terrain = classify(g, elev, precip=mean_precip)
+    new_desert_frac = g.area[terrain.biome == 2].sum() / g.area.sum()
+    print(f"desert land fraction: latitude-band={old_desert_frac:.3f} -> weather-driven={new_desert_frac:.3f}")
+
+    terrain_rgb = biome_colors(terrain, elevation_shading=True)
+    terrain_hex = ["#%02x%02x%02x" % tuple(c) for c in terrain_rgb]
 
     wind_all = np.array(wind_frames_speed)
     wind_vmax = float(np.percentile(wind_all, 99.5))
