@@ -88,7 +88,16 @@ class OceanParams:
                                              # what this replaced, doesn't conserve volume and
                                              # was the actual source of a slow coastal blowup)
     nu: float = 2.0e4              # velocity diffusion coeff, m^2/s (grid-noise damping,
-                                    # same role as atmosphere.py's nu)
+                                    # same role as atmosphere.py's nu) -- deliberately left at
+                                    # its original small value now that nu4 (below) is doing
+                                    # the boundary-layer job; see module docstring's "harmonic
+                                    # vs biharmonic" section for why cranking *this* up instead
+                                    # was the wrong lever (it isn't scale-selective, so a
+                                    # coefficient large enough to resolve a ~100km boundary
+                                    # layer also flattens the ~5,000km gyre-scale flow)
+    nu4: float = 0.0                # biharmonic (nabla^4) velocity hyperviscosity, m^4/s --
+                                    # 0 by default (opt-in via munk_matched_nu4()); this is
+                                    # the scale-selective replacement for over-cranking nu
     kappa_h: float = 2.0e4         # thickness diffusion coeff, m^2/s (checkerboard-mode
                                     # damping, same role as atmosphere.py's kappa_h)
     rho_air: float = 1.2           # kg/m^3, for the bulk wind-stress formula
@@ -218,11 +227,15 @@ class WindDrivenOcean:
            is a completely different number -- roughly 2.8 for RK4's real
            axis vs ~2.8 total extent on the imaginary axis, but eigenvalues
            of a graph Laplacian can approach -4*nu/dx^2, hence the extra
-           safety margin below). This was never binding at the original
-           small nu, but matching the Munk boundary-layer width to this
-           grid's resolution (see munk_matched_nu()) means nu can get large
-           enough that this becomes the tightest constraint, not gravity
-           waves or Coriolis.
+           safety margin below). Not binding at nu's current (small,
+           original) value.
+        4. Biharmonic stability: same idea, but edge_laplacian applied
+           twice has eigenvalues that are the *square* of the single-
+           application ones, i.e. up to (2/dx^2)^2 = 4/dx^4 in magnitude
+           -- so this bound scales with dx^4, not dx^2, and gets tight
+           fast as nu4 grows. This is usually the tightest of the four
+           once nu4 is turned on (see munk_matched_nu4()) -- confirmed
+           empirically while tuning it, see ocean.py's __main__.
         """
         dx = np.sqrt(self.geo.cell_area.mean())
         wave_speed = np.sqrt(self.p.g_reduced * self.p.h0)
@@ -232,8 +245,10 @@ class WindDrivenOcean:
         dt_inertial = safety / f_max if f_max > 0 else np.inf
 
         dt_diffusion = safety * dx ** 2 / (4.0 * self.p.nu) if self.p.nu > 0 else np.inf
+        dx4 = (dx ** 2) ** 2
+        dt_biharmonic = safety * dx4 / (4.0 * self.p.nu4) if self.p.nu4 > 0 else np.inf
 
-        return min(dt_gravity, dt_inertial, dt_diffusion)
+        return min(dt_gravity, dt_inertial, dt_diffusion, dt_biharmonic)
 
     def tendency(self, s: OceanState) -> OceanState:
         p, geo = self.p, self.geo
@@ -251,10 +266,25 @@ class WindDrivenOcean:
         coriolis = geo.f_edge * u_tan
         diffusion = p.nu * geo.edge_laplacian(s.u)
 
+        # Biharmonic (nabla^4) hyperviscosity: apply the same Laplacian
+        # twice, with a MINUS sign. That sign is not optional -- edge_laplacian's
+        # eigenvalues are <= 0 (it's a proper diffusion operator), so its
+        # eigenvalues squared (what applying it twice produces) are >= 0,
+        # which would be a source, not a sink, without the flip. Physically,
+        # this is nu4 * (-nabla^2)^2 u, the standard hyperviscosity form.
+        # Why bother when nu already provides diffusion: nu's damping rate
+        # scales with wavenumber^2, nu4's with wavenumber^4 -- nu4 can be
+        # tuned to strongly damp grid-scale noise (and sharpen the western
+        # boundary layer) while barely touching gyre-scale flow, which a
+        # single harmonic coefficient structurally cannot do (see
+        # munk_matched_nu() vs munk_matched_nu4() below).
+        biharmonic = -p.nu4 * geo.edge_laplacian(geo.edge_laplacian(s.u))
+
         dudt = (
             -p.g_reduced * grad_eta
             - coriolis
             + diffusion
+            + biharmonic
             - self.fric_rate_edge * s.u
             + self.wind_forcing_edge
         )
@@ -314,6 +344,32 @@ def munk_matched_nu(geo: CGridGeometry, target_cells: float = 3.0, lat_deg: floa
     beta = 2.0 * OMEGA * np.cos(np.radians(lat_deg)) / geo.radius
     delta_target = target_cells * dx
     return beta * delta_target ** 3
+
+
+def munk_matched_nu4(geo: CGridGeometry, target_cells: float = 3.0, lat_deg: float = 30.0) -> float:
+    """
+    Biharmonic analogue of munk_matched_nu(): for hyperviscous (nabla^4)
+    friction, the theoretical western-boundary-layer width scales as
+    delta_M4 = (nu4/beta)^(1/5) instead of (nu/beta)^(1/3) -- one more
+    factor of the friction term's derivative order (biharmonic brings 4
+    derivatives into the vorticity balance instead of 2, so closing the
+    balance against beta needs one more power of nu4 relative to length).
+
+    Flagged honestly: that exponent is taken from the standard boundary-
+    layer scaling argument, not fit to this grid. The bigger uncertainty
+    is target_cells itself -- biharmonic friction is *supposed* to be far
+    more scale-selective than harmonic, so it likely doesn't need as many
+    "cells across" to avoid flattening gyre-scale flow the way the
+    harmonic version did. Treat this function's output as a reasonable
+    starting order of magnitude, not a derived answer -- ocean.py's
+    __main__ sweeps a few target_cells values against a cheap idealized
+    test before committing to one, the same empirical-first approach
+    every other stability constant in this module got.
+    """
+    dx = np.sqrt(geo.cell_area.mean())
+    beta = 2.0 * OMEGA * np.cos(np.radians(lat_deg)) / geo.radius
+    delta_target = target_cells * dx
+    return beta * delta_target ** 5
 
 
 def idealized_zonal_wind_forcing(grid: Grid, geo: CGridGeometry, p: OceanParams, amplitude: float = 6.0) -> np.ndarray:

@@ -167,14 +167,37 @@ the resulting current field is a rough first pass, not a clean one:
   problem also heavily damps the ~5,000km gyre-scale flow, not just the
   coast.
 
-**Next up: biharmonic (∇⁴) diffusion.** Real ocean models (MOM, POP,
-MITgcm) use biharmonic rather than harmonic viscosity for exactly this
-job — its damping rate scales with wavenumber⁴, concentrating it much
-more tightly at the grid scale and leaving basin-scale flow largely
-alone. The plan is to apply the existing Laplacian operator twice as the
-boundary-layer/noise control, dial the harmonic `nu` back down near its
-original value, and see whether that gets both the clean structure and
-realistic current speeds at once.
+**Biharmonic (∇⁴) diffusion: implemented, tuned, not yet in production
+data.** `ocean.py` now has a real hyperviscosity term (`nu4`, applied as
+`edge_laplacian` twice with a sign flip -- that flip isn't optional, since
+squaring a proper diffusion operator's eigenvalues makes them a *source*
+without it) plus its own CFL bound and a `munk_matched_nu4()` sizing
+helper, with `nu` left back at its original small value. Real ocean
+models (MOM, POP, MITgcm) use biharmonic rather than harmonic viscosity
+for exactly this job — its damping rate scales with wavenumber⁴ instead
+of wavenumber², concentrating it much more tightly at the grid scale and
+leaving basin-scale flow largely alone.
+
+Swept `target_cells` (1.0/1.5/2.0) against a cached wind-forcing field
+(no atmosphere re-run needed) and checked each visually, not just for
+stability:
+- 1.0 was too weak to even bind the timestep -- indistinguishable from
+  no biharmonic term at all.
+- 1.5 showed marginal improvement, still mostly turbulent scribble.
+- **2.0** was a real qualitative jump: streamlines went from noisy
+  scribble to smooth, coherent flow, with a genuine closed loop visible
+  near a landmass for the first time. Cost: dt drops ~5.5x (2745s ->
+  500s), so a full ocean spin-up is meaningfully more expensive now.
+
+`target_cells=2.0` is wired into `export_web_data.py`, but the fresh
+production data (real terrain + full atmosphere coupling, not the cached
+test forcing) hasn't finished generating -- a run was killed partway
+through the ocean phase when the machine was needed for something else
+(heavy unrelated CPU contention had already dragged it well past the
+original estimate anyway). **Next session: re-run `export_web_data.py`
+end to end**, rebuild the globe, republish. Everything needed to do that
+is committed; only the multi-checkpoint ocean.npz outputs and the final
+web_data.json/globe.html are not (regenerable, gitignored per usual).
 
 ## The web globe
 
@@ -207,9 +230,9 @@ to visibly clean up once the biharmonic diffusion work above lands.
 
 ## Roadmap
 
-Immediate next step: biharmonic diffusion for the ocean layer (above), and
-feeding the resulting cleaner current field back into the web globe. After
-that: a buoyancy-driven deep/thermohaline layer (temperature + salinity,
+Immediate next step: re-run `export_web_data.py` to completion with the
+now-implemented, empirically-tuned biharmonic diffusion (above) and
+publish the refreshed globe. After that: a buoyancy-driven deep/thermohaline layer (temperature + salinity,
 sea-ice formation with brine rejection at the poles) under the wind-driven
 surface layer, two-way atmosphere-ocean coupling, a seasonal cycle,
 ice-albedo feedback, then randomized-continent ensembles to see whether

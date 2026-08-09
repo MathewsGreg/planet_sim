@@ -26,7 +26,7 @@ import numpy as np
 from grid import build_grid
 from terrain import random_elevation, classify, BIOMES
 from atmosphere import ShallowWaterAtmosphere
-from ocean import WindDrivenOcean, OceanParams, wind_stress_forcing_edge, smooth_edge_field
+from ocean import WindDrivenOcean, OceanParams, wind_stress_forcing_edge, smooth_edge_field, munk_matched_nu4
 from visualize import biome_colors
 from map_view import geographic_components, streamlines
 
@@ -91,16 +91,22 @@ if __name__ == "__main__":
             print(f"  wind-averaging: t={atmos.t / 86400:.1f}d", flush=True)
     mean_wind_forcing = smooth_edge_field(atmos.geo, forcing_accum / n_avg_steps, passes=6)
 
-    # --- Ocean: a modest spin-up at the original (not yet Munk-matched)
-    #     viscosity -- good enough for a first visualization pass; the
-    #     boundary-layer/biharmonic work is tracked separately ---
+    # --- Ocean: biharmonic (nabla^4) hyperviscosity for the western
+    #     boundary layer, harmonic nu left at its original small value --
+    #     see ocean.py's module docstring and README for the harmonic-vs-
+    #     biharmonic story. target_cells=2.0 chosen empirically (swept
+    #     1.0/1.5/2.0 against the cached wind forcing): 2.0 is where
+    #     streamlines actually go from turbulent scribble to smooth,
+    #     coherent flow; the cost is a real one -- dt drops ~5.5x, this
+    #     phase is the slow part of this script now.
     ocean = WindDrivenOcean(g, params=ocean_p, terrain=terrain, geo=atmos.geo)
+    ocean_p.nu4 = munk_matched_nu4(ocean.geo, target_cells=2.0)
     ocean.set_wind_forcing(mean_wind_forcing)
     dt_o = ocean.cfl_dt()
     s_o = ocean.initial_state()
-    ocean_years = 3
+    ocean_years = 4
     n_steps_o = int(ocean_years * 365 * 86400 / dt_o)
-    print(f"ocean: dt={dt_o:.0f}s steps={n_steps_o}")
+    print(f"ocean: nu4={ocean_p.nu4:.2e}  dt={dt_o:.0f}s steps={n_steps_o}")
     for i in range(n_steps_o):
         s_o = ocean.step(s_o, dt_o)
         if i % max(1, n_steps_o // 6) == 0:
