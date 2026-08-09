@@ -5,3 +5,5 @@ __pycache__/
 *.gif
 *.mp4
 *.npz
+web_data.json
+globe.html

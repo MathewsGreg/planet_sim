@@ -43,6 +43,7 @@ def _harmonic_sum(grid: Grid, rng: np.random.Generator, l_min: int, l_max: int, 
 def random_elevation(
     grid: Grid,
     seed: int,
+    l_min: int = 2,
     l_max: int = 10,
     spectral_slope: float = 1.8,
     ridge_l_max: int = 15,
@@ -51,10 +52,22 @@ def random_elevation(
     """
     Real-valued elevation field on grid cell centers.
 
-    Base layer: random low-degree (1..l_max) spherical harmonics, amplitude
-    falling off as 1/l^slope -- "red" spectrum, gives smooth continent-scale
-    blobs (this alone has no linear mountain *ranges*, just rounded highlands,
-    since low-degree spherical harmonics are inherently round basis functions).
+    Base layer: random low-degree (l_min..l_max) spherical harmonics,
+    amplitude falling off as 1/l^slope -- "red" spectrum, gives smooth
+    continent-scale blobs (this alone has no linear mountain *ranges*, just
+    rounded highlands, since low-degree spherical harmonics are inherently
+    round basis functions).
+
+    `l_min` defaults to 2, not 1: degree 1 is a pure dipole (one hemisphere
+    up, the other down), and with a red spectrum it's the single largest
+    term in the whole sum (sigma=1/1^slope=1, vs. 1/2^slope=0.29 for degree
+    2) -- large enough to dominate and produce essentially one giant
+    landmass on one side of the planet with everything else a minor
+    perturbation on top, rather than several distinct continents. Starting
+    at degree 2 (the lowest degree that can express more than one lobe)
+    removes that single dominant term and lets multiple, comparably-sized
+    high regions compete -- confirmed empirically, see run comparing
+    l_min=1 vs 2 vs 3.
 
     Ridge layer: a second, higher-degree (l_max+1..ridge_l_max) harmonic sum,
     put through a ridge transform (1 - |field|, squared) -- the standard
@@ -66,7 +79,7 @@ def random_elevation(
     Returned field has zero mean and unit standard deviation.
     """
     rng = np.random.default_rng(seed)
-    field = _harmonic_sum(grid, rng, 1, l_max, spectral_slope)
+    field = _harmonic_sum(grid, rng, l_min, l_max, spectral_slope)
 
     if ridge_l_max > l_max and ridge_weight > 0:
         ridge_raw = _harmonic_sum(grid, rng, l_max + 1, ridge_l_max, spectral_slope=1.0)

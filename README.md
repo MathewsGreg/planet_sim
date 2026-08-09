@@ -22,7 +22,7 @@ ensembles are in place.
 - [x] Wind-driven ocean surface layer (reduced-gravity, one-way wind forcing) -- stable and checkpointable, but gyre structure is still rough; see below
 - [ ] Buoyancy-driven deep/thermohaline ocean layer (temperature + salinity, sea-ice/brine rejection)
 - [ ] Atmosphere-ocean coupling (currently one-way, atmosphere -> ocean only), seasonal cycle, ice-albedo feedback
-- [ ] Web visualization (interactive globe, controls, analytics)
+- [x] Web visualization — interactive globe (terrain/wind/currents layers, wind animation with time scrubber); analytics still minimal
 - [ ] Randomized-continent ensemble runs
 
 ## Layout
@@ -38,6 +38,8 @@ ensembles are in place.
 | `map_view.py` | 2D equirectangular map rendering — flat/colormapped fills, wind quivers, current streamlines, coastline overlay |
 | `run_ocean_currents.py` | Spins up the atmosphere, time-averages its wind over a full year, spins up the ocean under it, plots current speed + streamlines, saves a checkpoint |
 | `continue_ocean_spinup.py` | Resumes an ocean checkpoint with changed params (e.g. viscosity) and/or more simulated time, without re-running the atmosphere |
+| `export_web_data.py` | Runs a fresh terrain + animated atmosphere + ocean spin-up and packs it into `web_data.json` for the web globe |
+| `globe_template.html` + `build_globe.py` | Self-contained interactive globe (vanilla Canvas 2D, no dependencies) — `build_globe.py` inlines `web_data.json` into the template to produce the final `globe.html` |
 
 Each module's `__main__` block runs a self-contained sanity check
 (`python grid.py`, `python terrain.py`, `python atmosphere.py`, ...).
@@ -174,17 +176,27 @@ boundary-layer/noise control, dial the harmonic `nu` back down near its
 original value, and see whether that gets both the clean structure and
 realistic current speeds at once.
 
+## The web globe
+
+`globe.html` (built from `globe_template.html` + `export_web_data.py`'s
+output) is a self-contained, dependency-free interactive globe: vanilla
+Canvas 2D, not WebGL/Three.js, since a strict CSP on published artifacts
+blocks fetching any external library. Rendering exploits one fact about a
+sphere: it's convex, so simple backface culling (skip any triangle facing
+away from the viewer) gives fully correct visibility with no z-sorting
+needed, which is what makes a plain 2D canvas workable for a rotatable
+"3D" globe at all. Three toggleable layers (terrain, animated wind with a
+day scrubber, ocean currents), all reusing the exact `l_min=2` terrain and
+the same fresh spin-up data described above — deliberately not the older
+checkpoints, so every layer agrees on where the coastlines are.
+
 ## Roadmap
 
-Immediate next step: biharmonic diffusion for the ocean layer (above).
-After that: a buoyancy-driven deep/thermohaline layer (temperature +
-salinity, sea-ice formation with brine rejection at the poles) under the
-wind-driven surface layer, two-way atmosphere-ocean coupling, a seasonal
-cycle, ice-albedo feedback, then randomized-continent ensembles to see
-whether Earth-like patterns (western boundary intensification, subtropical
-gyres, the thermohaline overturning loop) re-emerge independent of
-geography.
-
-Once there's something worth watching move, this is meant to live on a web
-page — an interactive globe with time controls and analytics (energy
-budgets, circulation diagnostics), not just static renders.
+Immediate next step: biharmonic diffusion for the ocean layer (above), and
+feeding the resulting cleaner current field back into the web globe. After
+that: a buoyancy-driven deep/thermohaline layer (temperature + salinity,
+sea-ice formation with brine rejection at the poles) under the wind-driven
+surface layer, two-way atmosphere-ocean coupling, a seasonal cycle,
+ice-albedo feedback, then randomized-continent ensembles to see whether
+Earth-like patterns (western boundary intensification, subtropical gyres,
+the thermohaline overturning loop) re-emerge independent of geography.

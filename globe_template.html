@@ -1,0 +1,565 @@
+<meta charset="UTF-8" />
+<title>Planet Sim — Ocean/Atmosphere Observatory</title>
+<style>
+  :root {
+    --bg: #eef3f4;
+    --panel: rgba(255,255,255,0.72);
+    --panel-solid: #ffffff;
+    --ink: #12212c;
+    --muted: #56707f;
+    --accent: #0e8a76;
+    --accent-rgb: 14,138,118;
+    --amber: #b5762b;
+    --line: rgba(18,33,44,0.14);
+    --glow: rgba(14,138,118,0.22);
+    --font-ui: -apple-system, "Segoe UI Semibold", "Segoe UI", Roboto, sans-serif;
+    --font-mono: "Cascadia Mono", "SF Mono", Consolas, "Roboto Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a141f; --panel: rgba(16,28,43,0.72); --panel-solid: #101c2b;
+      --ink: #dde6ea; --muted: #7d93a3; --accent: #45e0c4; --accent-rgb: 69,224,196;
+      --amber: #e2a25a; --line: rgba(221,230,234,0.12); --glow: rgba(69,224,196,0.25);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a141f; --panel: rgba(16,28,43,0.72); --panel-solid: #101c2b;
+    --ink: #dde6ea; --muted: #7d93a3; --accent: #45e0c4; --accent-rgb: 69,224,196;
+    --amber: #e2a25a; --line: rgba(221,230,234,0.12); --glow: rgba(69,224,196,0.25);
+  }
+  :root[data-theme="light"] {
+    --bg: #eef3f4; --panel: rgba(255,255,255,0.72); --panel-solid: #ffffff;
+    --ink: #12212c; --muted: #56707f; --accent: #0e8a76; --accent-rgb: 14,138,118;
+    --amber: #b5762b; --line: rgba(18,33,44,0.14); --glow: rgba(14,138,118,0.22);
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%; margin: 0; overflow: hidden;
+    background: var(--bg); color: var(--ink);
+    font-family: var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+  }
+  #app { position: relative; width: 100%; height: 100%; }
+
+  #globeCanvas {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    touch-action: none; cursor: grab;
+    opacity: 0; transform: scale(0.93);
+    transition: opacity 1.1s ease, transform 1.1s cubic-bezier(.16,.9,.2,1);
+  }
+  #globeCanvas.loaded { opacity: 1; transform: scale(1); }
+  #globeCanvas:active { cursor: grabbing; }
+
+  .corner {
+    position: absolute; z-index: 2; pointer-events: none;
+  }
+  #wordmark { top: 20px; left: 22px; }
+  #wordmark .brand {
+    font-family: var(--font-ui); font-weight: 700; font-size: 13px;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink);
+  }
+  #wordmark .sub {
+    font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+    margin-top: 3px; letter-spacing: 0.01em;
+  }
+
+  #hint {
+    position: absolute; top: 22px; right: 24px; z-index: 2;
+    font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+    letter-spacing: 0.04em; text-transform: uppercase;
+    opacity: 1; transition: opacity 0.6s ease;
+  }
+  #hint.hidden { opacity: 0; }
+
+  #hud {
+    position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%);
+    z-index: 3; display: flex; align-items: stretch; gap: 1px;
+    background: var(--panel); backdrop-filter: blur(14px) saturate(1.4);
+    -webkit-backdrop-filter: blur(14px) saturate(1.4);
+    border: 1px solid var(--line); border-radius: 4px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.18);
+    max-width: calc(100vw - 32px);
+    overflow-x: auto;
+  }
+  .hud-section {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; border-right: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  .hud-section:last-child { border-right: none; }
+
+  .layer-btn {
+    display: flex; align-items: center; gap: 6px;
+    font-family: var(--font-ui); font-size: 11px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); background: transparent; border: 1px solid transparent;
+    border-radius: 3px; padding: 6px 10px; cursor: pointer;
+  }
+  .layer-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.6; }
+  .layer-btn:hover { color: var(--ink); }
+  .layer-btn.active {
+    color: var(--accent); border-color: rgba(var(--accent-rgb), 0.4);
+    background: rgba(var(--accent-rgb), 0.1);
+  }
+  .layer-btn:focus-visible, button:focus-visible, input:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+
+  #playBtn {
+    width: 26px; height: 26px; border-radius: 50%;
+    border: 1px solid var(--line); background: var(--panel-solid);
+    color: var(--ink); cursor: pointer; display: flex; align-items: center; justify-content: center;
+    flex: none;
+  }
+  #playBtn svg { width: 11px; height: 11px; fill: currentColor; }
+  #playBtn:hover { color: var(--accent); border-color: rgba(var(--accent-rgb),0.5); }
+
+  #scrubber {
+    -webkit-appearance: none; appearance: none;
+    width: 160px; height: 3px; background: var(--line); border-radius: 2px;
+    outline-offset: 4px;
+  }
+  #scrubber::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 11px; height: 11px; border-radius: 50%;
+    background: var(--accent); cursor: pointer;
+    box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.18);
+  }
+  #scrubber::-moz-range-thumb {
+    width: 11px; height: 11px; border-radius: 50%; border: none;
+    background: var(--accent); cursor: pointer;
+  }
+
+  #dayReadout {
+    font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+    font-variant-numeric: tabular-nums; min-width: 62px;
+  }
+
+  #statReadout {
+    font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  #statReadout .v { color: var(--ink); font-weight: 600; }
+
+  #legend {
+    position: absolute; right: 24px; bottom: 24px; z-index: 2;
+    font-family: var(--font-mono); font-size: 10px; color: var(--muted);
+    display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+  }
+  #legendBar { width: 120px; height: 6px; border-radius: 2px; border: 1px solid var(--line); }
+  #legendLabels { display: flex; justify-content: space-between; width: 120px; }
+
+  .disabled { opacity: 0.35; pointer-events: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #globeCanvas { transition: none; }
+  }
+
+  @media (max-width: 640px) {
+    .hud-section { padding: 8px 10px; }
+    #scrubber { width: 90px; }
+    #legend { display: none; }
+  }
+</style>
+
+<div id="app">
+  <canvas id="globeCanvas" aria-label="Rotatable procedurally-generated planet showing terrain, wind, or ocean current layers"></canvas>
+
+  <div class="corner" id="wordmark">
+    <div class="brand">Planet Sim</div>
+    <div class="sub" id="subLine">— loading —</div>
+  </div>
+
+  <div id="hint" class="corner">drag to rotate</div>
+
+  <div id="legend">
+    <div id="legendBar"></div>
+    <div id="legendLabels"><span id="legendMin">0</span><span id="legendMax"></span></div>
+  </div>
+
+  <div id="hud">
+    <div class="hud-section" id="layerSection">
+      <button class="layer-btn active" data-layer="terrain" aria-pressed="true">
+        <svg viewBox="0 0 16 16"><path d="M1 12.5l4.5-7 3 4.5L10 7l5 5.5"/></svg>
+        Terrain
+      </button>
+      <button class="layer-btn" data-layer="wind" aria-pressed="false">
+        <svg viewBox="0 0 16 16"><path d="M1 5.5h9a2 2 0 1 0-2-3"/><path d="M1 8.5h12a2 2 0 1 1-2 3"/><path d="M1 11.5h7"/></svg>
+        Wind
+      </button>
+      <button class="layer-btn" data-layer="currents" aria-pressed="false">
+        <svg viewBox="0 0 16 16"><path d="M1 5.5c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4.5 0"/><path d="M1 10.5c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4.5 0"/></svg>
+        Currents
+      </button>
+    </div>
+
+    <div class="hud-section" id="transportSection">
+      <button id="playBtn" aria-label="Play wind animation">
+        <svg id="playIcon" viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg>
+      </button>
+      <input type="range" id="scrubber" min="0" max="1" value="0" step="1" aria-label="Wind animation day scrubber" />
+      <span id="dayReadout">day 0.0</span>
+    </div>
+
+    <div class="hud-section">
+      <span id="statReadout">—</span>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const DATA = /*__PLANET_DATA__*/;
+
+const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// ---------- geometry setup ----------
+const nVerts = DATA.vertices.length;
+const VERT = new Float32Array(nVerts * 3);
+for (let i = 0; i < nVerts; i++) {
+  VERT[i*3] = DATA.vertices[i][0];
+  VERT[i*3+1] = DATA.vertices[i][1];
+  VERT[i*3+2] = DATA.vertices[i][2];
+}
+const nFaces = DATA.faces.length;
+const FACE = new Int32Array(nFaces * 3);
+for (let i = 0; i < nFaces; i++) {
+  FACE[i*3] = DATA.faces[i][0];
+  FACE[i*3+1] = DATA.faces[i][1];
+  FACE[i*3+2] = DATA.faces[i][2];
+}
+const isLand = DATA.isLand;
+
+// face adjacency (for coastline) built from shared edges, same idea as grid.py
+function buildCoastalFlags() {
+  const edgeMap = new Map();
+  const neighbors = new Int32Array(nFaces * 3).fill(-1);
+  for (let f = 0; f < nFaces; f++) {
+    const a = FACE[f*3], b = FACE[f*3+1], c = FACE[f*3+2];
+    const edges = [[a,b],[b,c],[c,a]];
+    for (let s = 0; s < 3; s++) {
+      const [i,j] = edges[s];
+      const key = i < j ? i + "_" + j : j + "_" + i;
+      if (edgeMap.has(key)) {
+        const other = edgeMap.get(key);
+        neighbors[f*3+s] = other;
+        // find other's matching slot
+        const oa = FACE[other*3], ob = FACE[other*3+1], oc = FACE[other*3+2];
+        const oedges = [[oa,ob],[ob,oc],[oc,oa]];
+        for (let os = 0; os < 3; os++) {
+          const [oi,oj] = oedges[os];
+          const okey = oi < oj ? oi + "_" + oj : oj + "_" + oi;
+          if (okey === key) { neighbors[other*3+os] = f; break; }
+        }
+      } else {
+        edgeMap.set(key, f);
+      }
+    }
+  }
+  const coastal = new Uint8Array(nFaces);
+  for (let f = 0; f < nFaces; f++) {
+    if (!isLand[f]) continue;
+    for (let s = 0; s < 3; s++) {
+      const n = neighbors[f*3+s];
+      if (n >= 0 && !isLand[n]) { coastal[f] = 1; break; }
+    }
+  }
+  return coastal;
+}
+const coastal = buildCoastalFlags();
+
+// terrain colors precomputed to rgb triples
+const terrainRGB = new Uint8Array(nFaces * 3);
+for (let f = 0; f < nFaces; f++) {
+  const hex = DATA.terrainColor[f];
+  terrainRGB[f*3] = parseInt(hex.slice(1,3), 16);
+  terrainRGB[f*3+1] = parseInt(hex.slice(3,5), 16);
+  terrainRGB[f*3+2] = parseInt(hex.slice(5,7), 16);
+}
+
+// ---------- colormaps ----------
+function lerpStops(stops, t) {
+  t = Math.max(0, Math.min(1, t));
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [p0, c0] = stops[i], [p1, c1] = stops[i+1];
+    if (t >= p0 && t <= p1) {
+      const u = (t - p0) / (p1 - p0 || 1);
+      return [
+        c0[0] + (c1[0]-c0[0])*u,
+        c0[1] + (c1[1]-c0[1])*u,
+        c0[2] + (c1[2]-c0[2])*u,
+      ];
+    }
+  }
+  return stops[stops.length-1][1];
+}
+const WIND_STOPS = [
+  [0.0, [10,20,31]], [0.35, [30,120,140]], [0.7, [69,224,196]], [1.0, [255,214,140]],
+];
+const CURRENT_STOPS = [
+  [0.0, [8,16,28]], [0.4, [40,110,190]], [0.75, [110,220,235]], [1.0, [230,245,247]],
+];
+const LAND_MUTE = [46, 58, 68];
+
+// ---------- state ----------
+const state = {
+  yaw: 0.6, pitch: -0.35,
+  dragging: false, lastX: 0, lastY: 0,
+  velYaw: 0.0015, velPitch: 0,
+  layer: "terrain",
+  frame: 0, playing: false, playAccum: 0,
+  firstDrag: true,
+};
+
+const nFrames = DATA.windFrames.length;
+
+// ---------- canvas / render ----------
+const canvas = document.getElementById("globeCanvas");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+function resize() {
+  const rect = canvas.getBoundingClientRect();
+  W = rect.width; H = rect.height;
+  canvas.width = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener("resize", resize);
+resize();
+
+const rotated = new Float32Array(nVerts * 3);
+function rotateVerts(yaw, pitch) {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  for (let i = 0; i < nVerts; i++) {
+    const x = VERT[i*3], y = VERT[i*3+1], z = VERT[i*3+2];
+    const x1 = x*cy + z*sy;
+    const z1 = -x*sy + z*cy;
+    const y2 = y*cp - z1*sp;
+    const z2 = y*sp + z1*cp;
+    rotated[i*3] = x1; rotated[i*3+1] = y2; rotated[i*3+2] = z2;
+  }
+}
+
+const LIGHT = (() => {
+  const v = [0.4, 0.55, 0.75];
+  const n = Math.hypot(v[0],v[1],v[2]);
+  return [v[0]/n, v[1]/n, v[2]/n];
+})();
+
+function faceColor(f) {
+  if (state.layer === "terrain") {
+    return [terrainRGB[f*3], terrainRGB[f*3+1], terrainRGB[f*3+2]];
+  }
+  if (state.layer === "wind") {
+    const row = DATA.windFrames[state.frame];
+    const t = row[f] / 255;
+    return lerpStops(WIND_STOPS, t);
+  }
+  // currents
+  if (isLand[f]) return LAND_MUTE;
+  const t = DATA.currentSpeed[f] / 255;
+  return lerpStops(CURRENT_STOPS, t);
+}
+
+function draw() {
+  if (canvas.getBoundingClientRect().width !== W) resize();
+  ctx.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2;
+  const R = Math.min(W, H) * 0.40;
+
+  // atmosphere glow
+  const glow = ctx.createRadialGradient(cx, cy, R*0.92, cx, cy, R*1.35);
+  glow.addColorStop(0, getVar("--glow"));
+  glow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(cx, cy, R*1.35, 0, Math.PI*2); ctx.fill();
+
+  rotateVerts(state.yaw, state.pitch);
+
+  for (let f = 0; f < nFaces; f++) {
+    const i0 = FACE[f*3], i1 = FACE[f*3+1], i2 = FACE[f*3+2];
+    const x0 = rotated[i0*3], y0 = rotated[i0*3+1], z0 = rotated[i0*3+2];
+    const x1 = rotated[i1*3], y1 = rotated[i1*3+1], z1 = rotated[i1*3+2];
+    const x2 = rotated[i2*3], y2 = rotated[i2*3+1], z2 = rotated[i2*3+2];
+    const zc = (z0+z1+z2)/3;
+    if (zc <= 0.01) continue;
+
+    let nx = (x0+x1+x2)/3, ny = (y0+y1+y2)/3, nz = zc;
+    const nlen = Math.hypot(nx,ny,nz) || 1;
+    nx/=nlen; ny/=nlen; nz/=nlen;
+    const shade = 0.52 + 0.48 * Math.max(0, nx*LIGHT[0]+ny*LIGHT[1]+nz*LIGHT[2]);
+
+    const [r,g,b] = faceColor(f);
+    ctx.fillStyle = `rgb(${(r*shade)|0},${(g*shade)|0},${(b*shade)|0})`;
+
+    const sx0 = cx + R*x0, sy0 = cy - R*y0;
+    const sx1 = cx + R*x1, sy1 = cy - R*y1;
+    const sx2 = cx + R*x2, sy2 = cy - R*y2;
+    ctx.beginPath();
+    ctx.moveTo(sx0, sy0); ctx.lineTo(sx1, sy1); ctx.lineTo(sx2, sy2);
+    ctx.closePath();
+    ctx.fill();
+
+    if (state.layer !== "terrain" && coastal[f]) {
+      ctx.strokeStyle = "rgba(255,255,255,0.35)";
+      ctx.lineWidth = 0.6;
+      ctx.stroke();
+    }
+  }
+}
+
+function getVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// ---------- interaction ----------
+canvas.addEventListener("pointerdown", (e) => {
+  state.dragging = true; state.lastX = e.clientX; state.lastY = e.clientY;
+  state.velYaw = 0; state.velPitch = 0;
+  canvas.setPointerCapture(e.pointerId);
+  if (state.firstDrag) {
+    state.firstDrag = false;
+    document.getElementById("hint").classList.add("hidden");
+  }
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!state.dragging) return;
+  const dx = e.clientX - state.lastX, dy = e.clientY - state.lastY;
+  state.lastX = e.clientX; state.lastY = e.clientY;
+  const s = 0.006;
+  state.yaw += dx * s;
+  state.pitch = Math.max(-1.45, Math.min(1.45, state.pitch + dy * s));
+  state.velYaw = dx * s * 0.6;
+  state.velPitch = dy * s * 0.6;
+});
+window.addEventListener("pointerup", () => { state.dragging = false; });
+
+// ---------- HUD wiring ----------
+const layerBtns = document.querySelectorAll(".layer-btn");
+layerBtns.forEach(btn => {
+  btn.addEventListener("click", () => {
+    layerBtns.forEach(b => { b.classList.remove("active"); b.setAttribute("aria-pressed","false"); });
+    btn.classList.add("active"); btn.setAttribute("aria-pressed","true");
+    state.layer = btn.dataset.layer;
+    updateTransportEnabled();
+    updateLegend();
+    updateStats();
+  });
+});
+
+const transportSection = document.getElementById("transportSection");
+function updateTransportEnabled() {
+  transportSection.classList.toggle("disabled", state.layer !== "wind");
+}
+
+const playBtn = document.getElementById("playBtn");
+const playIcon = document.getElementById("playIcon");
+const scrubber = document.getElementById("scrubber");
+scrubber.max = String(nFrames - 1);
+const dayReadout = document.getElementById("dayReadout");
+
+playBtn.addEventListener("click", () => {
+  state.playing = !state.playing;
+  playBtn.setAttribute("aria-label", state.playing ? "Pause wind animation" : "Play wind animation");
+  playIcon.innerHTML = state.playing
+    ? '<rect x="1" y="1" width="3.4" height="10" /><rect x="7.6" y="1" width="3.4" height="10" />'
+    : '<polygon points="2,1 11,6 2,11" />';
+});
+scrubber.addEventListener("input", () => {
+  state.playing = false;
+  playIcon.innerHTML = '<polygon points="2,1 11,6 2,11" />';
+  state.frame = parseInt(scrubber.value, 10);
+  updateDayReadout();
+  updateStats();
+});
+
+function updateDayReadout() {
+  dayReadout.textContent = "day " + DATA.windDays[state.frame].toFixed(1);
+}
+
+function updateLegend() {
+  const bar = document.getElementById("legendBar");
+  const minEl = document.getElementById("legendMin");
+  const maxEl = document.getElementById("legendMax");
+  if (state.layer === "terrain") {
+    bar.style.background = "linear-gradient(90deg, #1c5f8a, #2f6b3a, #d9c064, #f2f6f8)";
+    minEl.textContent = "ocean"; maxEl.textContent = "ice";
+  } else if (state.layer === "wind") {
+    bar.style.background = `linear-gradient(90deg, ${WIND_STOPS.map(s=>`rgb(${s[1].join(",")})`).join(",")})`;
+    minEl.textContent = "0"; maxEl.textContent = DATA.windVmax.toFixed(0) + " m/s";
+  } else {
+    bar.style.background = `linear-gradient(90deg, ${CURRENT_STOPS.map(s=>`rgb(${s[1].join(",")})`).join(",")})`;
+    minEl.textContent = "0"; maxEl.textContent = DATA.currentVmax.toFixed(2) + " m/s";
+  }
+}
+
+const statReadout = document.getElementById("statReadout");
+function updateStats() {
+  if (state.layer === "terrain") {
+    const landFrac = isLand.reduce((a,b)=>a+b,0) / nFaces;
+    statReadout.innerHTML = `<span class="v">${nFaces.toLocaleString()}</span> cells &middot; <span class="v">${(landFrac*100).toFixed(0)}%</span> land`;
+  } else if (state.layer === "wind") {
+    const row = DATA.windFrames[state.frame];
+    let sum = 0, max = 0;
+    for (let i = 0; i < row.length; i++) { sum += row[i]; if (row[i] > max) max = row[i]; }
+    const mean = (sum / row.length) / 255 * DATA.windVmax;
+    const mx = max / 255 * DATA.windVmax;
+    statReadout.innerHTML = `mean <span class="v">${mean.toFixed(1)}</span> &middot; max <span class="v">${mx.toFixed(1)}</span> m/s`;
+  } else {
+    let sum = 0, max = 0, n = 0;
+    for (let i = 0; i < nFaces; i++) {
+      if (isLand[i]) continue;
+      const v = DATA.currentSpeed[i];
+      sum += v; n++; if (v > max) max = v;
+    }
+    const mean = (sum / n) / 255 * DATA.currentVmax;
+    const mx = max / 255 * DATA.currentVmax;
+    statReadout.innerHTML = `mean <span class="v">${mean.toFixed(3)}</span> &middot; max <span class="v">${mx.toFixed(3)}</span> m/s`;
+  }
+}
+
+document.getElementById("subLine").textContent =
+  `${nFaces.toLocaleString()} cells · level-4 geodesic · seed 1`;
+
+// ---------- animation loop ----------
+let lastT = performance.now();
+function tick(t) {
+  const dt = Math.min(0.05, (t - lastT) / 1000);
+  lastT = t;
+
+  if (!state.dragging) {
+    if (!reduceMotion) {
+      if (Math.abs(state.velYaw) > 0.00001 || Math.abs(state.velPitch) > 0.00001) {
+        state.yaw += state.velYaw;
+        state.pitch = Math.max(-1.45, Math.min(1.45, state.pitch + state.velPitch));
+        state.velYaw *= 0.94; state.velPitch *= 0.94;
+      } else {
+        state.yaw += dt * 0.045; // gentle idle drift
+      }
+    }
+  }
+
+  if (state.layer === "wind" && state.playing) {
+    state.playAccum += dt;
+    if (state.playAccum > 0.09) {
+      state.playAccum = 0;
+      state.frame = (state.frame + 1) % nFrames;
+      scrubber.value = String(state.frame);
+      updateDayReadout();
+      updateStats();
+    }
+  }
+
+  draw();
+  requestAnimationFrame(tick);
+}
+
+updateTransportEnabled();
+updateLegend();
+updateStats();
+updateDayReadout();
+requestAnimationFrame(tick);
+requestAnimationFrame(() => canvas.classList.add("loaded"));
+</script>
