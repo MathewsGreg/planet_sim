@@ -50,6 +50,7 @@ def save_checkpoint(path: str, cp: Checkpoint) -> None:
         atmos_t=cp.atmos.t,
         ocean_h=cp.ocean_state.h,
         ocean_u=cp.ocean_state.u,
+        ocean_T=cp.ocean_state.T,
         ocean_t=cp.ocean.t,
         wind_forcing=cp.wind_forcing,
     )
@@ -70,7 +71,14 @@ def load_checkpoint(path: str) -> Checkpoint:
     ocean = WindDrivenOcean(grid, terrain=terrain, geo=atmos.geo)
     ocean.t = float(d["ocean_t"])
     ocean.set_wind_forcing(d["wind_forcing"])
-    ocean_state = OceanState(h=d["ocean_h"], u=d["ocean_u"])
+    # older checkpoints (pre-SST) don't have ocean_T -- fall back to a
+    # uniform T_mean field, same as a fresh initial_state(), rather than
+    # failing to load an otherwise-good multi-hour spin-up
+    if "ocean_T" in d:
+        ocean_T = d["ocean_T"]
+    else:
+        ocean_T = np.full(grid.n_cells, ocean.p.T_mean)
+    ocean_state = OceanState(h=d["ocean_h"], u=d["ocean_u"], T=ocean_T)
 
     return Checkpoint(
         grid=grid, terrain=terrain, atmos=atmos, atmos_state=atmos_state,
@@ -87,4 +95,5 @@ if __name__ == "__main__":
     print(f"  atmosphere t={cp.atmos.t / 86400:.1f}d")
     print(f"  ocean t={cp.ocean.t / 86400 / 365:.2f}y  "
           f"h[min,max]=[{cp.ocean_state.h.min():.1f},{cp.ocean_state.h.max():.1f}]  "
-          f"|u| mean/max={speed.mean():.4f}/{speed.max():.4f} m/s")
+          f"|u| mean/max={speed.mean():.4f}/{speed.max():.4f} m/s  "
+          f"T[min,max]=[{cp.ocean_state.T.min():.1f},{cp.ocean_state.T.max():.1f}]degC")

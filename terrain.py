@@ -107,6 +107,11 @@ BIOMES = {
     3: ("forest", "#2f6b3a"),
     4: ("tundra", "#8a9a8a"),
     5: ("ice", "#f2f6f8"),
+    # 6 (sea_ice) is deliberately not assigned by classify() -- it's a
+    # dynamic, ocean-state-dependent overlay (see visualize.sea_ice_overlay),
+    # not a static elevation/latitude biome like 0-5. A slightly bluer white
+    # than land ice (5) so the two read as visually related but distinct.
+    6: ("sea_ice", "#dce8ec"),
 }
 
 

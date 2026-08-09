@@ -31,6 +31,19 @@ def biome_colors(terrain: Terrain, elevation_shading: bool = True) -> np.ndarray
     return rgb.astype(np.uint8)
 
 
+def sea_ice_overlay(rgb: np.ndarray, sst: np.ndarray, is_land: np.ndarray, freeze_c: float) -> np.ndarray:
+    """Override color to the sea_ice swatch (BIOMES[6]) wherever an ocean
+    cell's SST is at or below freezing. A post-processing overlay on top of
+    biome_colors' output, not part of Terrain.biome itself -- sea ice is
+    dynamic (depends on the ocean's current thermal state), while
+    Terrain.biome is a static classification from elevation/latitude/precip.
+    Flat color, no elevation shading (ocean cells have none to shade by)."""
+    frozen = (~is_land) & (sst <= freeze_c)
+    rgb = rgb.copy()
+    rgb[frozen] = _hex_to_rgb(BIOMES[6][1])
+    return rgb
+
+
 def build_mesh(grid: Grid) -> pv.PolyData:
     faces = np.hstack([np.full((grid.n_cells, 1), 3), grid.faces]).astype(np.int64)
     return pv.PolyData(grid.vertices, faces)

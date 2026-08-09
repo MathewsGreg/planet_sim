@@ -60,7 +60,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from grid import Grid, build_grid
-from atmosphere import CGridGeometry, OMEGA, RADIUS, AtmosState, ShallowWaterAtmosphere
+from atmosphere import CGridGeometry, OMEGA, RADIUS, OBLIQUITY, AtmosState, ShallowWaterAtmosphere
 
 
 @dataclass
@@ -104,12 +104,46 @@ class OceanParams:
     rho0: float = 1025.0           # kg/m^3, reference seawater density
     Cd: float = 1.3e-3             # dimensionless bulk drag coefficient
     radius: float = RADIUS
+    obliquity: float = OBLIQUITY
+
+    # -- sea surface temperature: a passive tracer (advected + relaxed +
+    # diffused), same shape as atmosphere.py's moisture q -- doesn't feed
+    # back into h/u dynamics yet (that's the buoyancy-coupling stage still
+    # to come). Its only job so far is giving sea ice a real, physical
+    # location instead of ice being a land-only, latitude-band biome. --
+    T_mean: float = 10.0        # degC, global-mean equilibrium SST
+    delta_T_eq: float = 18.0    # degC, equator-to-pole equilibrium SST swing --
+                                 # combined with T_mean gives a -8..28degC range.
+                                 # First pass used 13/15 (-2..28degC): technically
+                                 # correct (equilibrium fixed to land exactly in
+                                 # that range, see sst_equilibrium docstring) but
+                                 # empirically useless -- the pole target sat right
+                                 # at the -1.8degC freezing line, so real ocean
+                                 # cells mostly stayed just *above* it and sea ice
+                                 # covered ~0.1% of the planet, functionally
+                                 # invisible. Checked in a full production run,
+                                 # not just the idealized self-test -- this wider
+                                 # swing is itself still a first pass, not
+                                 # re-validated yet
+    tau_sst: float = 30 * 86400.0  # relaxation timescale toward T_eq, s -- a
+                                    # numerical stand-in for net air-sea heat
+                                    # exchange (there's no real coupled heat flux
+                                    # yet), same role as tau_land_h. 30 days is a
+                                    # guess at mixed-layer thermal inertia, not
+                                    # measured -- flagged for empirical check
+    kappa_T: float = 2.0e4      # heat diffusion coeff, m^2/s -- same order as
+                                 # kappa_h, reuses its (unenforced but so-far-fine)
+                                 # CFL margin rather than deriving a new bound
+    T_freeze: float = -1.8      # degC, real seawater freezing point (lower than
+                                 # fresh water's due to salinity) -- below this,
+                                 # an ocean cell counts as sea ice
 
 
 @dataclass
 class OceanState:
     h: np.ndarray   # (n_cells,) m, active-layer thickness
     u: np.ndarray   # (n_edges,) m/s, edge-normal component
+    T: np.ndarray   # (n_cells,) degC, sea surface temperature (passive tracer)
 
 
 def wind_stress_forcing_edge(
@@ -199,7 +233,43 @@ class WindDrivenOcean:
             rng = np.random.default_rng(seed)
             h = h + perturb * rng.standard_normal(self.grid.n_cells)
         u = np.zeros(self.geo.edges.n_edges)
-        return OceanState(h=h, u=u)
+        T = np.full(self.grid.n_cells, self.p.T_mean)  # starts uniform, relaxes
+        # toward sst_equilibrium(t) the same way h starts at h0 and relaxes
+        # toward h_eq in atmosphere.py
+        return OceanState(h=h, u=u, T=T)
+
+    def sst_equilibrium(self, t: float) -> np.ndarray:
+        """Latitude+season equilibrium SST (degC) -- the ocean's own insolation
+        proxy, same shape of forcing as atmosphere.py's h_equilibrium (warm
+        tropics, cold poles, seasonal wobble via obliquity) but independent of
+        it -- different units/physics, no shared state, deliberately not
+        wired to the atmosphere's actual h_eq (that coupling is a later
+        stage).
+
+        Normalizes the warm and cold excursions from the mean *separately*,
+        not by a single insolation_norm.max() the way atmosphere.h_equilibrium
+        does -- coszen is asymmetric (floored at 0 on the polar/night side,
+        up to 1 at the subsolar point), so the below-mean excursion at the
+        poles is proportionally larger than the above-mean excursion at the
+        equator. atmosphere.py gets away with a single max() because its
+        delta_h_eq (400) is small next to h0 (3000); this module's
+        delta_T_eq isn't small relative to anything, and dividing both signs
+        by the same (equator-side) max blew the pole target out to -36degC
+        against an intended -2degC floor -- caught by an isolated t=0 check
+        of this function alone, before any dynamics ran. Normalizing each
+        side by its own extremum instead guarantees the equilibrium field
+        stays within exactly [T_mean-delta_T_eq, T_mean+delta_T_eq]."""
+        lat = np.radians(self.grid.lat)
+        year = 365.25 * 86400.0
+        decl = self.p.obliquity * np.sin(2 * np.pi * t / year)
+        coszen = np.clip(np.sin(lat) * np.sin(decl) + np.cos(lat) * np.cos(decl), 0.0, None)
+        insolation_norm = coszen - coszen.mean()
+        pos_scale = max(insolation_norm.max(), 1e-9)
+        neg_scale = max(-insolation_norm.min(), 1e-9)
+        norm = np.where(
+            insolation_norm >= 0, insolation_norm / pos_scale, insolation_norm / neg_scale
+        )
+        return self.p.T_mean + self.p.delta_T_eq * norm
 
     def cfl_dt(self, safety: float = 0.4) -> float:
         """
@@ -250,7 +320,7 @@ class WindDrivenOcean:
 
         return min(dt_gravity, dt_inertial, dt_diffusion, dt_biharmonic)
 
-    def tendency(self, s: OceanState) -> OceanState:
+    def tendency(self, s: OceanState, t: float) -> OceanState:
         p, geo = self.p, self.geo
 
         h_edge = 0.5 * (s.h[geo.cell_left] + s.h[geo.cell_right])
@@ -259,6 +329,32 @@ class WindDrivenOcean:
             -geo.divergence(flux)
             + p.kappa_h * geo.cell_laplacian(s.h)
             - self.land_h_relax_rate * (s.h - p.h0)
+        )
+
+        # SST: passive tracer, relax toward equilibrium, diffuse -- but
+        # advected as a *material* derivative (-u.grad(T)), not flux
+        # divergence (-div(T*u)) the way moisture q is. q is extensive (a
+        # column-integrated depth of water, "stuff" that a flux genuinely
+        # transports), so flux form is the right equation for it. T is
+        # intensive -- flux form silently adds a T*div(u) compressibility
+        # term (div(Tu) = T*div(u) + u.grad(T)) that has no business being
+        # in a temperature equation, and it isn't harmless: this ocean
+        # layer's h/div(u) never equilibrates in the no-relaxation idealized
+        # self-test below, so that spurious term compounded every step and
+        # drove T to -38degC against a T_eq floor of ~-2degC (caught by
+        # Stage 2's sanity check, first pass had this bug). Recovering
+        # u.grad(T) = div(T*u) - T*div(u) removes the compressibility term
+        # exactly -- pure advection + a linear relaxation + diffusion all
+        # individually obey a maximum principle (can't manufacture a new
+        # extreme beyond T_eq's own range), which flux form didn't.
+        T_edge = 0.5 * (s.T[geo.cell_left] + s.T[geo.cell_right])
+        div_u = geo.divergence(s.u)
+        advect = geo.divergence(T_edge * s.u) - s.T * div_u  # = u.grad(T)
+        T_eq = self.sst_equilibrium(t)
+        dTdt = (
+            -advect
+            + (T_eq - s.T) / p.tau_sst
+            + p.kappa_T * geo.cell_laplacian(s.T)
         )
 
         grad_eta = geo.gradient_normal(s.h)
@@ -288,25 +384,30 @@ class WindDrivenOcean:
             - self.fric_rate_edge * s.u
             + self.wind_forcing_edge
         )
-        return OceanState(h=dhdt, u=dudt)
+        return OceanState(h=dhdt, u=dudt, T=dTdt)
 
     def step(self, s: OceanState, dt: float) -> OceanState:
         """RK4, same rationale as atmosphere.py: gravity waves here are
-        just as undamped-oscillator-shaped, so RK2 would amplify them."""
+        just as undamped-oscillator-shaped, so RK2 would amplify them.
+        t is threaded through each RK stage (self.t + 0/0.5/0.5/1 * dt),
+        same as atmosphere.py's step(), so sst_equilibrium()'s seasonal
+        cycle evolves within a step rather than freezing at the step's
+        start time."""
 
         def add(a: OceanState, b: OceanState, scale: float) -> OceanState:
-            return OceanState(h=a.h + scale * b.h, u=a.u + scale * b.u)
+            return OceanState(h=a.h + scale * b.h, u=a.u + scale * b.u, T=a.T + scale * b.T)
 
-        k1 = self.tendency(s)
-        k2 = self.tendency(add(s, k1, 0.5 * dt))
-        k3 = self.tendency(add(s, k2, 0.5 * dt))
-        k4 = self.tendency(add(s, k3, dt))
+        k1 = self.tendency(s, self.t)
+        k2 = self.tendency(add(s, k1, 0.5 * dt), self.t + 0.5 * dt)
+        k3 = self.tendency(add(s, k2, 0.5 * dt), self.t + 0.5 * dt)
+        k4 = self.tendency(add(s, k3, dt), self.t + dt)
 
         h_new = s.h + (dt / 6.0) * (k1.h + 2 * k2.h + 2 * k3.h + k4.h)
         u_new = s.u + (dt / 6.0) * (k1.u + 2 * k2.u + 2 * k3.u + k4.u)
+        T_new = s.T + (dt / 6.0) * (k1.T + 2 * k2.T + 2 * k3.T + k4.T)
         self.t += dt
 
-        return OceanState(h=h_new, u=u_new)
+        return OceanState(h=h_new, u=u_new, T=T_new)
 
     def energy(self, s: OceanState) -> float:
         """Diagnostic total energy (KE + available potential energy)."""
@@ -427,4 +528,19 @@ if __name__ == "__main__":
             speed = np.abs(s.u)
             print(f"  t={model.t/86400:6.1f}d  h[min,max]=[{s.h.min():7.2f},{s.h.max():7.2f}]  "
                   f"|u| mean/max={speed.mean():.4f}/{speed.max():.4f} m/s  "
-                  f"finite={np.isfinite(s.h).all()}")
+                  f"T[min,max]={s.T.min():5.1f},{s.T.max():5.1f}degC  "
+                  f"finite={np.isfinite(s.h).all() and np.isfinite(s.T).all()}")
+
+    print("\n=== Stage 2: SST sanity check (from the Stage 1 spin-up above) ===")
+    # No land in this self-test (WindDrivenOcean(g) with no terrain), so
+    # T_eq's latitude shape is all this run has to reproduce -- checking it
+    # lands in a plausible range and that ice forms poleward, not equatorward,
+    # is the cheap version of the "check empirically" this project's other
+    # constants got, before wiring this into a real terrain-coupled run.
+    abs_lat = np.abs(g.lat)
+    pole_T = s.T[abs_lat > 80].mean()
+    equator_T = s.T[abs_lat < 10].mean()
+    ice_frac = (s.T <= model.p.T_freeze).mean()
+    print(f"  mean T: poles(|lat|>80)={pole_T:.1f}degC  equator(|lat|<10)={equator_T:.1f}degC")
+    print(f"  sea ice fraction (T<={model.p.T_freeze}degC): {ice_frac:.3f}")
+    print(f"  monotonic pole<equator: {pole_T < equator_T}")

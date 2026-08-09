@@ -27,7 +27,7 @@ from grid import build_grid
 from terrain import random_elevation, classify, BIOMES
 from atmosphere import ShallowWaterAtmosphere
 from ocean import WindDrivenOcean, OceanParams, wind_stress_forcing_edge, smooth_edge_field, munk_matched_nu4
-from visualize import biome_colors
+from visualize import biome_colors, sea_ice_overlay
 from map_view import geographic_components, streamlines
 
 
@@ -100,8 +100,10 @@ if __name__ == "__main__":
     new_desert_frac = g.area[terrain.biome == 2].sum() / g.area.sum()
     print(f"desert land fraction: latitude-band={old_desert_frac:.3f} -> weather-driven={new_desert_frac:.3f}")
 
+    # terrain_hex (the final packed color) isn't built yet -- the sea-ice
+    # overlay below needs the ocean's spun-up SST first, so terrain_rgb
+    # gets finalized after the ocean spin-up further down.
     terrain_rgb = biome_colors(terrain, elevation_shading=True)
-    terrain_hex = ["#%02x%02x%02x" % tuple(c) for c in terrain_rgb]
 
     wind_all = np.array(wind_frames_speed)
     wind_vmax = float(np.percentile(wind_all, 99.5))
@@ -138,6 +140,19 @@ if __name__ == "__main__":
         s_o = ocean.step(s_o, dt_o)
         if i % max(1, n_steps_o // 6) == 0:
             print(f"  ocean: t={ocean.t / 86400 / 365:.2f}y", flush=True)
+
+    # --- Sea ice: real, ocean-state-dependent, wherever spun-up SST is at
+    # or below freezing -- unlike land ice/tundra (still latitude+elevation
+    # only, see terrain.classify), this can appear anywhere the simulated
+    # ocean actually gets cold enough, including the land-sparse southern
+    # high latitudes that never got land-based ice before (see README on
+    # the hemisphere land-fraction asymmetry). Overlaid onto terrain_rgb
+    # now that SST has had the full ocean spin-up to reach equilibrium.
+    ice_frac = float((~terrain.is_land & (s_o.T <= ocean_p.T_freeze)).sum()) / g.n_cells
+    print(f"SST range=[{s_o.T.min():.1f}, {s_o.T.max():.1f}]degC  "
+          f"sea ice fraction of all cells={ice_frac:.3f}")
+    terrain_rgb = sea_ice_overlay(terrain_rgb, s_o.T, terrain.is_land, ocean_p.T_freeze)
+    terrain_hex = ["#%02x%02x%02x" % tuple(c) for c in terrain_rgb]
 
     vec_o = ocean.geo.reconstruct_cell_vector(s_o.u)
     current_speed = np.linalg.norm(vec_o, axis=1)
