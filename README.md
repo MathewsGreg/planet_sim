@@ -190,6 +190,21 @@ day scrubber, ocean currents), all reusing the exact `l_min=2` terrain and
 the same fresh spin-up data described above — deliberately not the older
 checkpoints, so every layer agrees on where the coastlines are.
 
+Also live: a dashed equator ring + N/S pole markers on every layer (an
+orientation aid, not data), a reset-view button that tweens back to a
+default north-up/slightly-tilted orientation along the shortest rotational
+path, and direction -- not just magnitude -- on both flow layers. Wind
+gets animated arrow glyphs (cheap to redraw every frame, since it's just
+reading that frame's already-computed direction). Currents get actual
+traced streamlines instead: `export_web_data.py` reuses `map_view.py`'s
+existing matplotlib-streamplot tracer once (currents are a static layer;
+no need to re-integrate every frame), converts the resulting lon/lat path
+segments to xyz, and the page just rotates + redraws those precomputed
+segments each frame. Worth knowing: the streamlines faithfully show what's
+actually in the data right now, which is still the pre-biharmonic, noisy
+current field (~28k short segments, not clean loops) -- expect this layer
+to visibly clean up once the biharmonic diffusion work above lands.
+
 ## Roadmap
 
 Immediate next step: biharmonic diffusion for the ocean layer (above), and

@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import json
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 
 from grid import build_grid
@@ -25,7 +28,12 @@ from terrain import random_elevation, classify, BIOMES
 from atmosphere import ShallowWaterAtmosphere
 from ocean import WindDrivenOcean, OceanParams, wind_stress_forcing_edge, smooth_edge_field
 from visualize import biome_colors
-from map_view import geographic_components
+from map_view import geographic_components, streamlines
+
+
+def lonlat_to_xyz(lon, lat):
+    lonr, latr = np.radians(lon), np.radians(lat)
+    return np.stack([np.cos(latr) * np.cos(lonr), np.cos(latr) * np.sin(lonr), np.sin(latr)], axis=-1)
 
 if __name__ == "__main__":
     g = build_grid(4)
@@ -46,7 +54,13 @@ if __name__ == "__main__":
     steps_per_frame = max(1, int(frame_every * 86400 / dt_a))
     n_frames = int(animate_days / frame_every)
 
+    # subsampled cells for direction arrows -- same "every Nth cell" idea
+    # map_view.quiver_wind uses for the 2D plots, just applied on the globe
+    arrow_stride = 8
+    arrow_cells = np.arange(g.n_cells)[::arrow_stride]
+
     wind_frames_speed = []
+    wind_arrow_dir = []  # (n_frames, n_arrows, 3) unit tangent vectors, quantized
     wind_days = []
     for f in range(n_frames):
         for _ in range(steps_per_frame):
@@ -54,6 +68,10 @@ if __name__ == "__main__":
         vec = atmos.geo.reconstruct_cell_vector(s_a.u)
         speed = np.linalg.norm(vec, axis=1)
         wind_frames_speed.append(speed)
+        arrow_vec = vec[arrow_cells]
+        arrow_speed = speed[arrow_cells]
+        arrow_dir = arrow_vec / np.clip(arrow_speed, 1e-6, None)[:, None]
+        wind_arrow_dir.append(np.round(arrow_dir * 127).astype(np.int8))
         wind_days.append(atmos.t / 86400.0)
         print(f"  wind frame {f + 1}/{n_frames}  t={atmos.t / 86400:.1f}d", end="\r", flush=True)
     print()
@@ -94,6 +112,28 @@ if __name__ == "__main__":
     current_vmax = float(np.percentile(current_speed[~terrain.is_land], 99))
     current_q = np.clip(current_speed / max(current_vmax, 1e-9) * 255, 0, 255).astype(np.uint8)
 
+    # --- Current streamlines: reuse map_view.streamlines()'s existing,
+    # already-tested griddata-interpolation + matplotlib streamplot tracer
+    # rather than writing a second integrator -- pull the traced segments
+    # back out of the (never-saved) figure and convert lon/lat -> xyz for
+    # the globe to rotate+project each frame like everything else. One-off
+    # cost (not per-frame, currents are a static layer), negligible next
+    # to the physics runtime above.
+    u_east_o, v_north_o = geographic_components(g, vec_o)
+    u_east_o = np.where(terrain.is_land, 0.0, u_east_o)
+    v_north_o = np.where(terrain.is_land, 0.0, v_north_o)
+    _fig, _ax = plt.subplots()
+    _sp = streamlines(g, u_east_o, v_north_o, _ax, mask=terrain.is_land, density=2.6)
+    segments_lonlat = _sp.lines.get_segments()  # list of (2,2) [lon,lat] arrays
+    plt.close(_fig)
+
+    stream_segments = []
+    for seg in segments_lonlat:
+        p0 = lonlat_to_xyz(seg[0, 0], seg[0, 1])
+        p1 = lonlat_to_xyz(seg[1, 0], seg[1, 1])
+        stream_segments.append(np.round(np.concatenate([p0, p1]), 4).tolist())
+    print(f"current streamline segments: {len(stream_segments)}")
+
     # --- Pack ---
     data = {
         "vertices": np.round(g.vertices, 4).tolist(),
@@ -103,8 +143,11 @@ if __name__ == "__main__":
         "windDays": [round(d, 1) for d in wind_days],
         "windVmax": round(wind_vmax, 2),
         "windFrames": wind_q.tolist(),
+        "arrowCells": arrow_cells.tolist(),
+        "windArrowDir": [f.tolist() for f in wind_arrow_dir],
         "currentVmax": round(current_vmax, 3),
         "currentSpeed": current_q.tolist(),
+        "currentStreamlines": stream_segments,
     }
     with open("web_data.json", "w") as f:
         json.dump(data, f, separators=(",", ":"))

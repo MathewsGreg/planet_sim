@@ -106,14 +106,15 @@
     outline: 2px solid var(--accent); outline-offset: 2px;
   }
 
-  #playBtn {
+  #playBtn, #resetBtn {
     width: 26px; height: 26px; border-radius: 50%;
     border: 1px solid var(--line); background: var(--panel-solid);
     color: var(--ink); cursor: pointer; display: flex; align-items: center; justify-content: center;
     flex: none;
   }
   #playBtn svg { width: 11px; height: 11px; fill: currentColor; }
-  #playBtn:hover { color: var(--accent); border-color: rgba(var(--accent-rgb),0.5); }
+  #resetBtn svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+  #playBtn:hover, #resetBtn:hover { color: var(--accent); border-color: rgba(var(--accent-rgb),0.5); }
 
   #scrubber {
     -webkit-appearance: none; appearance: none;
@@ -178,6 +179,12 @@
   </div>
 
   <div id="hud">
+    <div class="hud-section">
+      <button id="resetBtn" aria-label="Reset view to default orientation">
+        <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 8 L8 3.6 M8 8 L11 9.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+
     <div class="hud-section" id="layerSection">
       <button class="layer-btn active" data-layer="terrain" aria-pressed="true">
         <svg viewBox="0 0 16 16"><path d="M1 12.5l4.5-7 3 4.5L10 7l5 5.5"/></svg>
@@ -268,6 +275,30 @@ function buildCoastalFlags() {
 }
 const coastal = buildCoastalFlags();
 
+// unrotated unit-sphere positions for the subsampled wind-arrow cells
+// (face centroids, re-normalized onto the sphere)
+const arrowCells = DATA.arrowCells;
+const nArrows = arrowCells.length;
+const arrowBase = new Float32Array(nArrows * 3);
+for (let i = 0; i < nArrows; i++) {
+  const f = arrowCells[i];
+  const i0 = FACE[f*3], i1 = FACE[f*3+1], i2 = FACE[f*3+2];
+  let x = (VERT[i0*3]+VERT[i1*3]+VERT[i2*3]) / 3;
+  let y = (VERT[i0*3+1]+VERT[i1*3+1]+VERT[i2*3+1]) / 3;
+  let z = (VERT[i0*3+2]+VERT[i1*3+2]+VERT[i2*3+2]) / 3;
+  const n = Math.hypot(x, y, z) || 1;
+  arrowBase[i*3] = x/n; arrowBase[i*3+1] = y/n; arrowBase[i*3+2] = z/n;
+}
+
+// graticule: equator ring + pole markers, computed once
+const EQUATOR_N = 160;
+const equatorPts = [];
+for (let i = 0; i <= EQUATOR_N; i++) {
+  const t = (i / EQUATOR_N) * Math.PI * 2;
+  equatorPts.push([Math.cos(t), Math.sin(t), 0]);
+}
+const POLES = [{ p: [0,0,1], label: "N" }, { p: [0,0,-1], label: "S" }];
+
 // terrain colors precomputed to rgb triples
 const terrainRGB = new Uint8Array(nFaces * 3);
 for (let f = 0; f < nFaces; f++) {
@@ -302,13 +333,18 @@ const CURRENT_STOPS = [
 const LAND_MUTE = [46, 58, 68];
 
 // ---------- state ----------
+// default view: north pole up, tilted slightly (not a dead-on polar
+// view) -- the same orientation "reset view" returns to.
+const DEFAULT_YAW = 0, DEFAULT_PITCH = -0.35;
 const state = {
-  yaw: 0.6, pitch: -0.35,
+  yaw: DEFAULT_YAW, pitch: DEFAULT_PITCH,
   dragging: false, lastX: 0, lastY: 0,
   velYaw: 0.0015, velPitch: 0,
   layer: "terrain",
   frame: 0, playing: false, playAccum: 0,
   firstDrag: true,
+  dashPhase: 0,
+  resetTween: null,
 };
 
 const nFrames = DATA.windFrames.length;
@@ -329,9 +365,18 @@ window.addEventListener("resize", resize);
 resize();
 
 const rotated = new Float32Array(nVerts * 3);
-function rotateVerts(yaw, pitch) {
-  const cy = Math.cos(yaw), sy = Math.sin(yaw);
-  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+// yaw around the world Y axis, then pitch around the (new) X axis --
+// shared by the bulk vertex buffer and every one-off point (graticule,
+// arrow tips, streamline endpoints) via the same cy/sy/cp/sp, computed
+// once per frame in draw().
+function rotPoint(x, y, z, cy, sy, cp, sp) {
+  const x1 = x*cy + z*sy;
+  const z1 = -x*sy + z*cy;
+  const y2 = y*cp - z1*sp;
+  const z2 = y*sp + z1*cp;
+  return [x1, y2, z2];
+}
+function rotateVerts(cy, sy, cp, sp) {
   for (let i = 0; i < nVerts; i++) {
     const x = VERT[i*3], y = VERT[i*3+1], z = VERT[i*3+2];
     const x1 = x*cy + z*sy;
@@ -366,17 +411,19 @@ function faceColor(f) {
 function draw() {
   if (canvas.getBoundingClientRect().width !== W) resize();
   ctx.clearRect(0, 0, W, H);
-  const cx = W / 2, cy = H / 2;
+  const cx = W / 2, cy0 = H / 2;
   const R = Math.min(W, H) * 0.40;
 
   // atmosphere glow
-  const glow = ctx.createRadialGradient(cx, cy, R*0.92, cx, cy, R*1.35);
+  const glow = ctx.createRadialGradient(cx, cy0, R*0.92, cx, cy0, R*1.35);
   glow.addColorStop(0, getVar("--glow"));
   glow.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = glow;
-  ctx.beginPath(); ctx.arc(cx, cy, R*1.35, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(cx, cy0, R*1.35, 0, Math.PI*2); ctx.fill();
 
-  rotateVerts(state.yaw, state.pitch);
+  const cy = Math.cos(state.yaw), sy = Math.sin(state.yaw);
+  const cp = Math.cos(state.pitch), sp = Math.sin(state.pitch);
+  rotateVerts(cy, sy, cp, sp);
 
   for (let f = 0; f < nFaces; f++) {
     const i0 = FACE[f*3], i1 = FACE[f*3+1], i2 = FACE[f*3+2];
@@ -394,9 +441,9 @@ function draw() {
     const [r,g,b] = faceColor(f);
     ctx.fillStyle = `rgb(${(r*shade)|0},${(g*shade)|0},${(b*shade)|0})`;
 
-    const sx0 = cx + R*x0, sy0 = cy - R*y0;
-    const sx1 = cx + R*x1, sy1 = cy - R*y1;
-    const sx2 = cx + R*x2, sy2 = cy - R*y2;
+    const sx0 = cx + R*x0, sy0 = cy0 - R*y0;
+    const sx1 = cx + R*x1, sy1 = cy0 - R*y1;
+    const sx2 = cx + R*x2, sy2 = cy0 - R*y2;
     ctx.beginPath();
     ctx.moveTo(sx0, sy0); ctx.lineTo(sx1, sy1); ctx.lineTo(sx2, sy2);
     ctx.closePath();
@@ -408,6 +455,110 @@ function draw() {
       ctx.stroke();
     }
   }
+
+  if (state.layer === "wind") drawWindArrows(cy, sy, cp, sp, cx, cy0, R);
+  if (state.layer === "currents") drawCurrentStreamlines(cy, sy, cp, sp, cx, cy0, R);
+  drawGraticule(cy, sy, cp, sp, cx, cy0, R);
+}
+
+// direction arrows for the animated wind layer: cheap to recompute every
+// frame since it's just reading that frame's stored direction, unlike
+// streamlines which need actual integration (see currents, below)
+function drawWindArrows(cy, sy, cp, sp, cx, cy0, R) {
+  const dirFrame = DATA.windArrowDir[state.frame];
+  const speedRow = DATA.windFrames[state.frame];
+  ctx.strokeStyle = "rgba(255,255,255,0.88)";
+  ctx.fillStyle = "rgba(255,255,255,0.88)";
+  ctx.lineWidth = 1.2;
+  for (let i = 0; i < nArrows; i++) {
+    const bx = arrowBase[i*3], by = arrowBase[i*3+1], bz = arrowBase[i*3+2];
+    const rb = rotPoint(bx, by, bz, cy, sy, cp, sp);
+    if (rb[2] <= 0.03) continue;
+
+    const cellIdx = arrowCells[i];
+    const speed01 = speedRow[cellIdx] / 255;
+    if (speed01 < 0.05) continue; // skip near-calm cells, declutter
+
+    const dxr = dirFrame[i*3] / 127, dyr = dirFrame[i*3+1] / 127, dzr = dirFrame[i*3+2] / 127;
+    const rt = rotPoint(bx + dxr*0.06, by + dyr*0.06, bz + dzr*0.06, cy, sy, cp, sp);
+
+    const sxB = cx + R*rb[0], syB = cy0 - R*rb[1];
+    let ddx = (cx + R*rt[0]) - sxB, ddy = (cy0 - R*rt[1]) - syB;
+    const dlen = Math.hypot(ddx, ddy) || 1;
+    const pxLen = 5 + 15 * speed01;
+    ddx = ddx/dlen*pxLen; ddy = ddy/dlen*pxLen;
+    const sxT = sxB + ddx, syT = syB + ddy;
+
+    ctx.beginPath(); ctx.moveTo(sxB, syB); ctx.lineTo(sxT, syT); ctx.stroke();
+    const ang = Math.atan2(ddy, ddx);
+    ctx.beginPath();
+    ctx.moveTo(sxT, syT);
+    ctx.lineTo(sxT - 3.4*Math.cos(ang-0.5), syT - 3.4*Math.sin(ang-0.5));
+    ctx.lineTo(sxT - 3.4*Math.cos(ang+0.5), syT - 3.4*Math.sin(ang+0.5));
+    ctx.closePath(); ctx.fill();
+  }
+}
+
+// precomputed streamline segments for the (static) currents layer -- see
+// export_web_data.py: traced once with the same matplotlib streamplot
+// integrator the 2D maps use, converted to xyz, so this just rotates and
+// draws line segments every frame rather than re-integrating a field.
+// A slowly-marching dash gives the flow a sense of motion.
+function drawCurrentStreamlines(cy, sy, cp, sp, cx, cy0, R) {
+  const segs = DATA.currentStreamlines;
+  ctx.strokeStyle = "rgba(255,255,255,0.6)";
+  ctx.lineWidth = 1.1;
+  if (!reduceMotion) {
+    ctx.setLineDash([5, 4]);
+    ctx.lineDashOffset = -state.dashPhase;
+  }
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    const p0 = rotPoint(s[0], s[1], s[2], cy, sy, cp, sp);
+    const p1 = rotPoint(s[3], s[4], s[5], cy, sy, cp, sp);
+    if (p0[2] <= 0.015 || p1[2] <= 0.015) continue;
+    ctx.beginPath();
+    ctx.moveTo(cx + R*p0[0], cy0 - R*p0[1]);
+    ctx.lineTo(cx + R*p1[0], cy0 - R*p1[1]);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+}
+
+// equator ring + N/S pole markers -- shown on every layer as an
+// orientation aid
+function drawGraticule(cy, sy, cp, sp, cx, cy0, R) {
+  ctx.strokeStyle = "rgba(255,255,255,0.32)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([1, 3]);
+  ctx.beginPath();
+  let started = false;
+  for (let i = 0; i < equatorPts.length; i++) {
+    const p = equatorPts[i];
+    const r = rotPoint(p[0], p[1], p[2], cy, sy, cp, sp);
+    const sx = cx + R*r[0], sy2 = cy0 - R*r[1];
+    if (r[2] <= 0.005) { started = false; continue; }
+    if (!started) { ctx.moveTo(sx, sy2); started = true; }
+    else ctx.lineTo(sx, sy2);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.font = "600 9px " + getVar("--font-mono");
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (const pole of POLES) {
+    const r = rotPoint(pole.p[0], pole.p[1], pole.p[2], cy, sy, cp, sp);
+    if (r[2] <= 0.02) continue;
+    const sx = cx + R*r[0], sy2 = cy0 - R*r[1];
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.beginPath(); ctx.arc(sx, sy2, 7, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(sx, sy2, 10.5, 0, Math.PI*2); ctx.stroke();
+    // label sits directly on the filled dot, so it's always legible
+    // regardless of whatever's underneath (terrain/wind/current color)
+    ctx.fillStyle = "rgba(10,20,31,0.95)";
+    ctx.fillText(pole.label, sx, sy2 + 0.5);
+  }
 }
 
 function getVar(name) {
@@ -418,6 +569,7 @@ function getVar(name) {
 canvas.addEventListener("pointerdown", (e) => {
   state.dragging = true; state.lastX = e.clientX; state.lastY = e.clientY;
   state.velYaw = 0; state.velPitch = 0;
+  state.resetTween = null; // grabbing the globe always overrides a reset in progress
   canvas.setPointerCapture(e.pointerId);
   if (state.firstDrag) {
     state.firstDrag = false;
@@ -437,6 +589,25 @@ canvas.addEventListener("pointermove", (e) => {
 window.addEventListener("pointerup", () => { state.dragging = false; });
 
 // ---------- HUD wiring ----------
+function angleDiff(a, b) { // shortest signed distance from angle a to b
+  let d = (b - a) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+document.getElementById("resetBtn").addEventListener("click", () => {
+  state.velYaw = 0; state.velPitch = 0;
+  if (reduceMotion) {
+    state.yaw = DEFAULT_YAW; state.pitch = DEFAULT_PITCH; state.resetTween = null;
+  } else {
+    state.resetTween = {
+      y0: state.yaw, p0: state.pitch,
+      yTarget: state.yaw + angleDiff(state.yaw, DEFAULT_YAW),
+      t0: performance.now(), dur: 700,
+    };
+  }
+});
+
 const layerBtns = document.querySelectorAll(".layer-btn");
 layerBtns.forEach(btn => {
   btn.addEventListener("click", () => {
@@ -529,7 +700,16 @@ function tick(t) {
   const dt = Math.min(0.05, (t - lastT) / 1000);
   lastT = t;
 
-  if (!state.dragging) {
+  if (state.resetTween) {
+    const rt = state.resetTween;
+    const u = Math.min(1, (t - rt.t0) / rt.dur);
+    const eased = 1 - Math.pow(1 - u, 3); // ease-out cubic
+    state.yaw = rt.y0 + (rt.yTarget - rt.y0) * eased;
+    state.pitch = rt.p0 + (DEFAULT_PITCH - rt.p0) * eased;
+    if (u >= 1) {
+      state.yaw = DEFAULT_YAW; state.pitch = DEFAULT_PITCH; state.resetTween = null;
+    }
+  } else if (!state.dragging) {
     if (!reduceMotion) {
       if (Math.abs(state.velYaw) > 0.00001 || Math.abs(state.velPitch) > 0.00001) {
         state.yaw += state.velYaw;
@@ -540,6 +720,8 @@ function tick(t) {
       }
     }
   }
+
+  if (!reduceMotion) state.dashPhase += dt * 14;
 
   if (state.layer === "wind" && state.playing) {
     state.playAccum += dt;
