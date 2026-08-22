@@ -1,0 +1,552 @@
+<meta charset="UTF-8" />
+<title>Container Port DES — Two-Slip Panamax Terminal</title>
+<style>
+  :root {
+    --bg: #eef3f4;
+    --panel: rgba(255,255,255,0.82);
+    --panel-solid: #ffffff;
+    --ink: #12212c;
+    --muted: #56707f;
+    --accent: #0e8a76;
+    --accent-rgb: 14,138,118;
+    --amber: #b5762b;
+    --red: #b5402b;
+    --line: rgba(18,33,44,0.14);
+    --water: #cfe3e6;
+    --quay: #d7cdb8;
+    --yard-empty: #e4ded0;
+    --font-ui: -apple-system, "Segoe UI Semibold", "Segoe UI", Roboto, sans-serif;
+    --font-mono: "Cascadia Mono", "SF Mono", Consolas, "Roboto Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a141f; --panel: rgba(16,28,43,0.82); --panel-solid: #101c2b;
+      --ink: #dde6ea; --muted: #7d93a3; --accent: #45e0c4; --accent-rgb: 69,224,196;
+      --amber: #e2a25a; --red: #e2705a; --line: rgba(221,230,234,0.14);
+      --water: #0e2233; --quay: #2a2718; --yard-empty: #1a2230;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a141f; --panel: rgba(16,28,43,0.82); --panel-solid: #101c2b;
+    --ink: #dde6ea; --muted: #7d93a3; --accent: #45e0c4; --accent-rgb: 69,224,196;
+    --amber: #e2a25a; --red: #e2705a; --line: rgba(221,230,234,0.14);
+    --water: #0e2233; --quay: #2a2718; --yard-empty: #1a2230;
+  }
+  :root[data-theme="light"] {
+    --bg: #eef3f4; --panel: rgba(255,255,255,0.82); --panel-solid: #ffffff;
+    --ink: #12212c; --muted: #56707f; --accent: #0e8a76; --accent-rgb: 14,138,118;
+    --amber: #b5762b; --red: #b5402b; --line: rgba(18,33,44,0.14);
+    --water: #cfe3e6; --quay: #d7cdb8; --yard-empty: #e4ded0;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%; margin: 0; overflow: hidden;
+    background: var(--bg); color: var(--ink);
+    font-family: var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+  }
+  #app { position: relative; width: 100%; height: 100%; }
+  #stage { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  .corner { position: absolute; z-index: 2; }
+  #wordmark { top: 18px; left: 20px; pointer-events: none; }
+  #wordmark .brand {
+    font-weight: 700; font-size: 13px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--ink);
+  }
+  #wordmark .sub {
+    font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+    margin-top: 3px; max-width: 380px; line-height: 1.5;
+  }
+
+  #stats {
+    top: 18px; right: 20px; z-index: 2;
+    background: var(--panel); backdrop-filter: blur(14px) saturate(1.4);
+    -webkit-backdrop-filter: blur(14px) saturate(1.4);
+    border: 1px solid var(--line); border-radius: 12px;
+    padding: 10px 14px; font-family: var(--font-mono); font-size: 11px;
+    color: var(--muted); min-width: 220px;
+  }
+  #stats .row { display: flex; justify-content: space-between; gap: 14px; padding: 2px 0; }
+  #stats .row b { color: var(--ink); font-weight: 600; }
+  #stats .hdr { color: var(--ink); font-weight: 700; font-size: 11px; letter-spacing: 0.08em;
+    text-transform: uppercase; margin-bottom: 4px; }
+
+  #hud {
+    position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%);
+    z-index: 3; display: flex; align-items: center; gap: 12px;
+    background: var(--panel); backdrop-filter: blur(14px) saturate(1.4);
+    -webkit-backdrop-filter: blur(14px) saturate(1.4);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 8px 16px; box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+    max-width: 92vw;
+  }
+  #hud button {
+    appearance: none; border: none; background: var(--accent); color: #06251f;
+    width: 34px; height: 34px; border-radius: 50%; cursor: pointer;
+    font-size: 14px; display: flex; align-items: center; justify-content: center;
+    flex: 0 0 auto;
+  }
+  :root[data-theme="dark"] #hud button, @media (prefers-color-scheme: dark) { }
+  #hud button.pause { background: var(--muted); color: var(--panel-solid); }
+  #hud input[type=range] { width: 34vw; max-width: 420px; accent-color: var(--accent); }
+  #hud .time {
+    font-family: var(--font-mono); font-size: 12px; color: var(--ink);
+    min-width: 132px; text-align: right;
+  }
+  #hud select {
+    font-family: var(--font-mono); font-size: 11px; background: transparent;
+    color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px;
+  }
+
+  #legend {
+    bottom: 74px; left: 20px; z-index: 2;
+    background: var(--panel); backdrop-filter: blur(14px) saturate(1.4);
+    -webkit-backdrop-filter: blur(14px) saturate(1.4);
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px 12px; font-family: var(--font-mono); font-size: 10.5px; color: var(--muted);
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  #legend .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+
+  #themeToggle {
+    top: 18px; right: 254px; z-index: 2;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 10px; font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+    cursor: pointer;
+  }
+
+  a.gh { color: var(--accent); text-decoration: none; }
+</style>
+
+<div id="app">
+  <canvas id="stage"></canvas>
+
+  <div class="corner" id="wordmark">
+    <div class="brand">Container Port DES</div>
+    <div class="sub">Two-slip Panamax terminal &middot; 4 quay cranes &middot; shared truck pool &middot; stacking yard.
+      A discrete-event simulation (<a class="gh" href="https://simpy.readthedocs.io/" target="_blank" rel="noopener">SimPy</a>), part of
+      <a class="gh" href="https://github.com/mathewsgreg/planet_sim" target="_blank" rel="noopener">planet_sim</a>.</div>
+  </div>
+
+  <div class="corner" id="stats"></div>
+  <div class="corner" id="legend"></div>
+  <div class="corner" id="themeToggle">theme: system</div>
+
+  <div id="hud">
+    <button id="playBtn">&#9654;</button>
+    <input id="scrub" type="range" min="0" max="1000" value="0" />
+    <span class="time" id="timeLabel">day 0.0 / 0.0</span>
+    <select id="speedSel">
+      <option value="6">6x</option>
+      <option value="24" selected>24x</option>
+      <option value="72">72x</option>
+      <option value="200">200x</option>
+    </select>
+  </div>
+</div>
+
+<script>
+const DATA = /*__PORT_DATA__*/;
+
+// ---------------------------------------------------------------------
+// setup
+// ---------------------------------------------------------------------
+const canvas = document.getElementById('stage');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
+
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+const shipsById = {};
+for (const s of DATA.ships) shipsById[s.id] = s;
+
+const samples = DATA.samples;
+const dt = DATA.params.sample_interval_hours;
+const simDays = DATA.params.sim_days;
+const nSlips = DATA.params.n_slips;
+const cranesPerSlip = DATA.params.cranes_per_slip;
+
+// ---------------------------------------------------------------------
+// playback state
+// ---------------------------------------------------------------------
+let playing = true;
+let speed = 24; // simulated hours per real second
+let simTime = 0; // hours
+let lastFrameMs = null;
+
+const scrub = document.getElementById('scrub');
+const timeLabel = document.getElementById('timeLabel');
+const playBtn = document.getElementById('playBtn');
+const speedSel = document.getElementById('speedSel');
+scrub.max = samples.length - 1;
+
+function sampleAt(t) {
+  let idx = Math.floor(t / dt);
+  if (idx < 0) idx = 0;
+  if (idx >= samples.length) idx = samples.length - 1;
+  return samples[idx];
+}
+
+function setSimTime(t) {
+  simTime = Math.max(0, Math.min(t, samples.length * dt - dt));
+  scrub.value = Math.round(simTime / dt);
+  timeLabel.textContent = `day ${(simTime / 24).toFixed(2)} / ${simDays.toFixed(0)}`;
+}
+setSimTime(0);
+
+playBtn.addEventListener('click', () => {
+  playing = !playing;
+  playBtn.innerHTML = playing ? '&#10074;&#10074;' : '&#9654;';
+  playBtn.classList.toggle('pause', playing);
+  lastFrameMs = null;
+});
+speedSel.addEventListener('change', () => { speed = parseFloat(speedSel.value); });
+scrub.addEventListener('input', () => {
+  playing = false; playBtn.innerHTML = '&#9654;'; playBtn.classList.remove('pause');
+  setSimTime(parseFloat(scrub.value) * dt);
+});
+
+const themeToggle = document.getElementById('themeToggle');
+const themes = ['system', 'light', 'dark'];
+let themeIdx = 0;
+themeToggle.addEventListener('click', () => {
+  themeIdx = (themeIdx + 1) % themes.length;
+  const t = themes[themeIdx];
+  themeToggle.textContent = 'theme: ' + t;
+  if (t === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+});
+
+// ---------------------------------------------------------------------
+// layout (schematic, in CSS pixels, recomputed each frame from W/H)
+// ---------------------------------------------------------------------
+function layout() {
+  const padL = 40, padR = 40, padT = 100, padB = 110;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  const anchorageW = Math.min(150, plotW * 0.14);
+  const yardW = Math.min(230, plotW * 0.22);
+  const berthW = plotW - anchorageW - yardW - 60;
+
+  const anchorageX = padL;
+  const berthX = anchorageX + anchorageW + 30;
+  const yardX = berthX + berthW + 30;
+
+  const slipH = plotH * 0.36;
+  const slipGap = plotH * 0.10;
+  const slip0Y = padT;
+  const slip1Y = padT + slipH + slipGap;
+
+  const truckY = slip1Y + slipH + 26;
+  const truckH = Math.max(40, padT + plotH - truckY - 4);
+
+  return {
+    padL, padT, plotW, plotH,
+    anchorage: { x: anchorageX, y: padT, w: anchorageW, h: plotH },
+    berth: { x: berthX, w: berthW },
+    slips: [ { x: berthX, y: slip0Y, w: berthW, h: slipH },
+             { x: berthX, y: slip1Y, w: berthW, h: slipH } ],
+    yard: { x: yardX, y: padT, w: yardW, h: slipH },
+    exportPool: { x: yardX, y: slip1Y, w: yardW, h: slipH * 0.55 },
+    truck: { x: berthX, y: truckY, w: berthW, h: truckH },
+  };
+}
+
+// ---------------------------------------------------------------------
+// drawing helpers
+// ---------------------------------------------------------------------
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function label(text, x, y, opts = {}) {
+  ctx.font = `${opts.bold ? '700' : '600'} ${opts.size || 11}px var(--font-ui), sans-serif`;
+  ctx.fillStyle = opts.color || cssVar('--muted');
+  ctx.textAlign = opts.align || 'left';
+  ctx.textBaseline = opts.baseline || 'alphabetic';
+  ctx.fillText(text, x, y);
+}
+
+function mono(text, x, y, opts = {}) {
+  ctx.font = `${opts.size || 10}px var(--font-mono), monospace`;
+  ctx.fillStyle = opts.color || cssVar('--muted');
+  ctx.textAlign = opts.align || 'left';
+  ctx.textBaseline = opts.baseline || 'alphabetic';
+  ctx.fillText(text, x, y);
+}
+
+function progressColor(frac) {
+  // green as work progresses; used for ship discharge/load bars
+  const acc = cssVar('--accent');
+  return acc;
+}
+
+function drawCraneIcon(cx, cy, s, busy) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = busy ? cssVar('--amber') : cssVar('--muted');
+  ctx.fillStyle = busy ? cssVar('--amber') : cssVar('--muted');
+  ctx.lineWidth = Math.max(1.4, s * 0.09);
+  ctx.globalAlpha = busy ? 1 : 0.55;
+  // A-frame gantry crane, simple pictogram
+  ctx.beginPath();
+  ctx.moveTo(-s * 0.55, s * 0.7); ctx.lineTo(0, -s * 0.75);
+  ctx.moveTo(s * 0.55, s * 0.7); ctx.lineTo(0, -s * 0.75);
+  ctx.moveTo(-s * 0.3, s * 0.2); ctx.lineTo(s * 0.3, s * 0.2);
+  ctx.stroke();
+  // boom
+  ctx.beginPath();
+  ctx.moveTo(0, -s * 0.75); ctx.lineTo(s * 1.1, -s * 0.55);
+  ctx.stroke();
+  if (busy) {
+    // hoisted box
+    ctx.globalAlpha = 1;
+    ctx.fillRect(s * 0.75, -s * 0.4, s * 0.32, s * 0.24);
+  }
+  ctx.restore();
+}
+
+function drawShip(x, y, w, h, dischargeFrac, loadFrac, phase) {
+  ctx.save();
+  ctx.translate(x, y);
+  const hull = cssVar('--ink');
+  ctx.globalAlpha = 0.92;
+  ctx.fillStyle = hull;
+  ctx.beginPath();
+  rr(0, h * 0.18, w, h * 0.5, h * 0.12);
+  ctx.fill();
+  // bow taper
+  ctx.beginPath();
+  ctx.moveTo(w, h * 0.18);
+  ctx.lineTo(w + h * 0.35, h * 0.43);
+  ctx.lineTo(w, h * 0.68);
+  ctx.closePath();
+  ctx.fill();
+  // container stacks (decorative rows), kept low enough not to collide
+  // with the name label drawn above the ship
+  const rows = 2, cols = Math.max(4, Math.floor(w / 22));
+  const colors = ['#c65b3f', '#3f7fc6', '#c6a13f', '#5fb08a'];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      ctx.fillStyle = colors[(r * 7 + c * 3) % colors.length];
+      ctx.globalAlpha = 0.85;
+      const bw = (w / cols) * 0.78, bh = (h * 0.26) / rows * 0.72;
+      ctx.fillRect(6 + c * (w / cols), h * 0.16 - r * (h * 0.26 / rows), bw, bh);
+    }
+  }
+  ctx.restore();
+
+  // progress bar underneath: two segments, discharge then load
+  const barY = y + h + 8, barW = w, barH = 6;
+  ctx.fillStyle = cssVar('--line');
+  rr(x, barY, barW, barH, 3); ctx.fill();
+  ctx.fillStyle = cssVar('--accent');
+  rr(x, barY, barW * 0.5 * dischargeFrac, barH, 3); ctx.fill();
+  ctx.fillStyle = cssVar('--amber');
+  rr(x + barW * 0.5, barY, barW * 0.5 * loadFrac, barH, 3); ctx.fill();
+}
+
+function drawYardGrid(x, y, w, h, level, cap, tint, title) {
+  label(title, x, y - 8, { bold: true, size: 10.5 });
+  const cols = 10, rows = 5;
+  const gap = 3;
+  const cw = (w - gap * (cols - 1)) / cols;
+  const ch = (h - gap * (rows - 1)) / rows;
+  const filledCells = Math.round((level / cap) * cols * rows);
+  let i = 0;
+  for (let r = rows - 1; r >= 0; r--) {
+    for (let c = 0; c < cols; c++) {
+      const cx = x + c * (cw + gap), cy = y + r * (ch + gap);
+      ctx.fillStyle = i < filledCells ? tint : cssVar('--yard-empty');
+      ctx.globalAlpha = i < filledCells ? 0.9 : 0.6;
+      rr(cx, cy, cw, ch, 2); ctx.fill();
+      i++;
+    }
+  }
+  ctx.globalAlpha = 1;
+  mono(`${Math.round(level)} / ${Math.round(cap)} TEU  (${(100 * level / cap).toFixed(0)}%)`,
+       x, y + h + 14, { size: 10 });
+}
+
+function drawTrucks(x, y, w, h, busy, queue, cap) {
+  label('Truck Pool (shared, quay ↔ yard/gate)', x, y - 8, { bold: true, size: 10.5 });
+  const n = cap;
+  const cols = Math.min(n, Math.max(6, Math.floor(w / 26)));
+  const rows = Math.ceil(n / cols);
+  const cw = Math.min(22, (w - (cols - 1) * 6) / cols);
+  const ch = 12;
+  for (let i = 0; i < n; i++) {
+    const c = i % cols, r = Math.floor(i / cols);
+    const tx = x + c * (cw + 6), ty = y + r * (ch + 6);
+    ctx.fillStyle = i < busy ? cssVar('--amber') : cssVar('--line');
+    ctx.globalAlpha = i < busy ? 0.95 : 1;
+    rr(tx, ty, cw, ch, 3); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  const rowsH = rows * (ch + 6);
+  mono(`busy ${busy}/${cap}  ·  waiting for a truck: ${queue}`, x, y + rowsH + 12, { size: 10 });
+  if (queue > 0) {
+    ctx.fillStyle = cssVar('--red');
+    for (let i = 0; i < Math.min(queue, 14); i++) {
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.arc(x + rowsH * 0 + 6 + i * 11, y + rowsH + 26, 3.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ---------------------------------------------------------------------
+// main draw
+// ---------------------------------------------------------------------
+function draw() {
+  const s = sampleAt(simTime);
+  const L = layout();
+  const ink = cssVar('--ink'), muted = cssVar('--muted'), line = cssVar('--line');
+
+  ctx.clearRect(0, 0, W, H);
+
+  // water background behind the whole berth/yard plot
+  ctx.fillStyle = cssVar('--water');
+  ctx.globalAlpha = 0.5;
+  rr(L.berth.x - 10, L.padT - 10, L.berth.w + 20, L.plotH + 20, 14);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // ---- anchorage ----
+  label('Anchorage (waiting for a slip)', L.anchorage.x, L.anchorage.y - 12, { bold: true, size: 10.5 });
+  ctx.strokeStyle = line; ctx.lineWidth = 1;
+  rr(L.anchorage.x, L.anchorage.y, L.anchorage.w, L.anchorage.h, 10); ctx.stroke();
+  const anchoredShips = s.anchorage;
+  const maxShow = Math.floor(L.anchorage.h / 46);
+  anchoredShips.slice(0, maxShow).forEach((sid, i) => {
+    const sh = shipsById[sid];
+    const name = sh ? sh.name.replace('MV ', '') : `ship #${sid}`;
+    const yy = L.anchorage.y + 14 + i * 46;
+    ctx.fillStyle = ink; ctx.globalAlpha = 0.85;
+    rr(L.anchorage.x + 10, yy, L.anchorage.w - 20, 26, 6); ctx.fill();
+    ctx.globalAlpha = 1;
+    mono(name, L.anchorage.x + 16, yy + 17, { size: 9.5, color: cssVar('--bg') });
+  });
+  if (anchoredShips.length > maxShow) {
+    mono(`+ ${anchoredShips.length - maxShow} more`, L.anchorage.x + 10,
+         L.anchorage.y + 14 + maxShow * 46 + 12, { size: 10 });
+  }
+  mono(`queue: ${anchoredShips.length}`, L.anchorage.x, L.anchorage.y + L.anchorage.h + 16, { size: 10.5, color: ink });
+
+  // ---- slips + cranes ----
+  for (let i = 0; i < nSlips; i++) {
+    const slip = L.slips[i];
+    label(`Slip ${i + 1}`, slip.x, slip.y - 12, { bold: true, size: 10.5 });
+    ctx.strokeStyle = line;
+    rr(slip.x, slip.y, slip.w, slip.h, 10); ctx.stroke();
+    // quay strip
+    ctx.fillStyle = cssVar('--quay'); ctx.globalAlpha = 0.6;
+    ctx.fillRect(slip.x, slip.y + slip.h * 0.7, slip.w, slip.h * 0.3);
+    ctx.globalAlpha = 1;
+
+    // cranes along the quay
+    const craneBusy = s.crane_busy[i], craneCap = s.crane_cap[i];
+    for (let c = 0; c < craneCap; c++) {
+      const ccx = slip.x + slip.w * (0.22 + c * 0.5);
+      const ccy = slip.y + slip.h * 0.62;
+      drawCraneIcon(ccx, ccy, Math.min(26, slip.h * 0.22), c < craneBusy);
+    }
+
+    const occ = s.slip_ships[i];
+    if (occ) {
+      const shipW = Math.min(slip.w * 0.7, 230);
+      const shipH = slip.h * 0.32;
+      const sx = slip.x + slip.w * 0.15, sy = slip.y + slip.h * 0.08;
+      const dFrac = occ.discharge > 0 ? Math.min(1, occ.moves_done / occ.discharge) : 1;
+      const lFrac = occ.load > 0
+        ? Math.min(1, Math.max(0, occ.moves_done - occ.discharge) / occ.load)
+        : (occ.moves_done >= occ.discharge ? 1 : 0);
+      drawShip(sx, sy, shipW, shipH, dFrac, lFrac);
+      mono(`${occ.name}`, sx, sy - 6, { size: 10, color: ink });
+      mono(`${occ.moves_done} / ${occ.moves_total} moves  ·  D:${occ.discharge} L:${occ.load}`,
+           sx, sy + shipH + 22, { size: 9.5 });
+    } else {
+      ctx.globalAlpha = 0.5;
+      mono('(empty berth)', slip.x + slip.w * 0.15, slip.y + slip.h * 0.3, { size: 10.5 });
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ---- yard + export pool ----
+  drawYardGrid(L.yard.x, L.yard.y + 18, L.yard.w, L.yard.h - 34, s.yard_level, s.yard_cap,
+               cssVar('--amber'), 'Stacking Yard (import boxes)');
+  drawYardGrid(L.exportPool.x, L.exportPool.y + 18, L.exportPool.w, L.exportPool.h - 34,
+               s.export_level, s.export_cap, cssVar('--accent'), 'Export-Ready Pool (gated-in)');
+
+  // ---- truck pool ----
+  drawTrucks(L.truck.x, L.truck.y + 16, L.truck.w, L.truck.h - 16, s.truck_busy, s.truck_queue, s.truck_cap);
+
+  // ---- stats panel ----
+  const statsEl = document.getElementById('stats');
+  const pctBusyCranes = (100 * s.crane_busy.reduce((a, b) => a + b, 0) /
+    (nSlips * cranesPerSlip)).toFixed(0);
+  statsEl.innerHTML = `
+    <div class="hdr">Live State &middot; day ${(simTime / 24).toFixed(1)}</div>
+    <div class="row"><span>ships completed</span><b>${s.ships_completed}</b></div>
+    <div class="row"><span>moves completed</span><b>${s.moves_completed.toLocaleString()}</b></div>
+    <div class="row"><span>anchorage queue</span><b>${s.anchorage.length}</b></div>
+    <div class="row"><span>cranes active</span><b>${s.crane_busy.reduce((a,b)=>a+b,0)} / ${nSlips*cranesPerSlip} (${pctBusyCranes}%)</b></div>
+    <div class="row"><span>trucks busy</span><b>${s.truck_busy} / ${s.truck_cap}</b></div>
+    <div class="row"><span>truck queue</span><b>${s.truck_queue}</b></div>
+    <div class="row"><span>yard fill</span><b>${(100*s.yard_level/s.yard_cap).toFixed(0)}%</b></div>
+    <div class="row"><span>export pool</span><b>${(100*s.export_level/s.export_cap).toFixed(0)}%</b></div>
+  `;
+
+  // legend
+  const legendEl = document.getElementById('legend');
+  legendEl.innerHTML = `
+    <div><span class="sw" style="background:${cssVar('--amber')}"></span>crane / truck busy, yard fill</div>
+    <div><span class="sw" style="background:${cssVar('--accent')}"></span>discharge progress, export pool</div>
+    <div><span class="sw" style="background:${cssVar('--red')}"></span>truck waiting (queued)</div>
+  `;
+
+  timeLabel.textContent = `day ${(simTime / 24).toFixed(2)} / ${simDays.toFixed(0)}`;
+}
+
+// ---------------------------------------------------------------------
+// loop
+// ---------------------------------------------------------------------
+function frame(ms) {
+  if (playing) {
+    if (lastFrameMs != null) {
+      const dtReal = (ms - lastFrameMs) / 1000;
+      setSimTime(simTime + dtReal * speed);
+      if (simTime >= samples.length * dt - dt - 0.01) {
+        playing = false; playBtn.innerHTML = '&#9654;'; playBtn.classList.remove('pause');
+      }
+    }
+    lastFrameMs = ms;
+  } else {
+    lastFrameMs = null;
+  }
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>

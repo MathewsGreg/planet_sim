@@ -233,3 +233,12 @@ surface layer, two-way atmosphere-ocean coupling, a seasonal cycle,
 ice-albedo feedback, then randomized-continent ensembles to see whether
 Earth-like patterns (western boundary intensification, subtropical gyres,
 the thermohaline overturning loop) re-emerge independent of geography.
+
+## Other projects in this repo
+
+- **[`container_port/`](container_port/README.md)** — a discrete-event
+  simulation of a two-slip Panamax container terminal (SimPy): ships,
+  anchorage queueing, 4 quay cranes, a shared truck pool, a stacking yard.
+  [Live visualization](docs/container_port/index.html). Unrelated to the
+  planet/ocean model above beyond sharing this repo and the same
+  "simulate it, then watch it in a self-contained web page" approach.
